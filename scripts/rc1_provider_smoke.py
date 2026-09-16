@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import asdict
 from time import perf_counter
 
 from app.core.config import get_settings
@@ -45,7 +46,7 @@ async def main() -> None:
         "answer_preview": answer[:160],
         "ttft_ms": round(((first_token_at or completed) - started) * 1000, 3),
         "total_latency_ms": round((completed - started) * 1000, 3),
-        "usage": usage.model_dump() if usage else None,
+        "usage": asdict(usage) if usage else None,
         "usage_reported": usage is not None,
     }
     print(json.dumps(result, ensure_ascii=False, indent=2))
