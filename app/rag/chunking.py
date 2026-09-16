@@ -54,13 +54,19 @@ def chunk_document(
                     source_url=document.source_url,
                     updated_at=document.updated_at,
                     tags=document.tags,
+                    source_id=document.source_id,
+                    publisher=document.publisher,
+                    authority_level=document.authority_level,
+                    freshness_class=document.freshness_class,
+                    source_verified_at=document.source_verified_at,
+                    expires_at=document.expires_at,
+                    content_hash=document.content_hash,
                 )
             )
             index += 1
         if end >= len(text):
             break
-        next_start = max(start + 1, end - overlap_chars)
-        start = next_start
+        start = max(start + 1, end - overlap_chars)
 
     return chunks
 
@@ -74,10 +80,6 @@ def chunk_documents(
     chunks: list[KnowledgeChunk] = []
     for document in documents:
         chunks.extend(
-            chunk_document(
-                document,
-                max_chars=max_chars,
-                overlap_chars=overlap_chars,
-            )
+            chunk_document(document, max_chars=max_chars, overlap_chars=overlap_chars)
         )
     return chunks
