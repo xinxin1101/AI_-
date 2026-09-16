@@ -90,15 +90,22 @@ def resolve_target_date(query: str) -> date:
 
 
 def find_known_places(text: str) -> list[str]:
-    """Return known Guilin-domain places in textual order, without duplicates."""
+    """Return longest non-overlapping known places in textual order."""
     matches: list[tuple[int, int, str]] = []
-    for order, place in enumerate(KNOWN_PLACES):
-        start = text.find(place)
-        if start >= 0:
-            matches.append((start, order, place))
-    matches.sort()
+    for place in KNOWN_PLACES:
+        for match in re.finditer(re.escape(place), text):
+            matches.append((match.start(), match.end(), place))
+    matches.sort(key=lambda item: (item[0], -(item[1] - item[0])))
+
+    selected: list[tuple[int, int, str]] = []
+    for start, end, place in matches:
+        if any(start >= chosen_start and end <= chosen_end for chosen_start, chosen_end, _ in selected):
+            continue
+        selected.append((start, end, place))
+
+    selected.sort(key=lambda item: item[0])
     result: list[str] = []
-    for _, _, place in matches:
+    for _, _, place in selected:
         if place not in result:
             result.append(place)
     return result
