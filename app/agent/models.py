@@ -47,6 +47,9 @@ class AgentPrepared(BaseModel):
     tool_calls: list[ToolEvent] = Field(default_factory=list)
     gate_reason: str | None = None
     fallback_answer: str = ""
+    standalone_query: str = ""
+    context_resolved: bool = False
+    context_resolution_reason: str | None = None
 
     @property
     def can_generate(self) -> bool:
@@ -55,7 +58,10 @@ class AgentPrepared(BaseModel):
 
 class AgentState(TypedDict, total=False):
     query: str
+    standalone_query: str
     history: list[dict[str, str]]
+    context_resolved: bool
+    context_resolution_reason: str | None
     rag_result: RAGResult
     intent: str
     tool_evidence: list[ToolEvidence]
