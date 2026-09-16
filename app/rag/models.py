@@ -10,6 +10,13 @@ class KnowledgeDocument(BaseModel):
     source_url: str | None = None
     updated_at: str | None = None
     tags: list[str] = Field(default_factory=list)
+    source_id: str | None = None
+    publisher: str | None = None
+    authority_level: str = "unknown"
+    freshness_class: str = "static"
+    source_verified_at: str | None = None
+    expires_at: str | None = None
+    content_hash: str | None = None
 
 
 class KnowledgeChunk(BaseModel):
@@ -22,6 +29,13 @@ class KnowledgeChunk(BaseModel):
     source_url: str | None = None
     updated_at: str | None = None
     tags: list[str] = Field(default_factory=list)
+    source_id: str | None = None
+    publisher: str | None = None
+    authority_level: str = "unknown"
+    freshness_class: str = "static"
+    source_verified_at: str | None = None
+    expires_at: str | None = None
+    content_hash: str | None = None
 
 
 class RetrievalHit(BaseModel):
@@ -49,3 +63,4 @@ class RAGResult(BaseModel):
     context: str = ""
     citations: list[Citation] = Field(default_factory=list)
     hits: list[RetrievalHit] = Field(default_factory=list)
+    gate_reason: str | None = None

@@ -10,9 +10,15 @@ from app.rag.vector_store import create_vector_store
 
 
 LOW_CONFIDENCE_ANSWER = (
-    "当前知识库没有检索到足够可靠的资料来回答这个问题。"
+    "当前知识库没有检索到足够可靠且足够新的资料来回答这个问题。"
     "如果问题涉及开放时间、票价、天气、交通班次等会变化的信息，请以对应官方渠道的最新公告为准。"
 )
+
+_TIME_SENSITIVE_TERMS = (
+    "今天", "明天", "后天", "现在", "当前", "实时", "开放时间", "几点", "票价",
+    "多少钱", "天气", "班次", "是否开放", "暂停", "关闭", "恢复开放",
+)
+_DYNAMIC_FRESHNESS = {"dynamic", "volatile", "realtime"}
 
 
 class RAGService:
@@ -32,12 +38,11 @@ class RAGService:
         if self._initialized or not self.settings.rag_enabled:
             return
         async with self._lock:
-            if self._initialized:
-                return
-            await self.reindex()
+            if not self._initialized:
+                await self.reindex()
 
     async def reindex(self) -> tuple[int, int]:
-        documents = load_documents(self.settings.rag_knowledge_path)
+        documents = load_documents(self.settings.rag_knowledge_path, drop_expired=True)
         chunks = chunk_documents(
             documents,
             max_chars=self.settings.rag_chunk_size_chars,
@@ -48,6 +53,10 @@ class RAGService:
         self.chunk_count = len(chunks)
         self._initialized = True
         return self.document_count, self.chunk_count
+
+    @staticmethod
+    def _is_time_sensitive(query: str) -> bool:
+        return any(term in query for term in _TIME_SENSITIVE_TERMS)
 
     def _citation(self, hit: RetrievalHit, index: int) -> Citation:
         snippet = hit.chunk.text.strip().replace("\n", " ")
@@ -66,11 +75,11 @@ class RAGService:
 
     async def retrieve(self, query: str) -> RAGResult:
         if not self.settings.rag_enabled:
-            return RAGResult(grounded=False, confidence=0.0)
+            return RAGResult(grounded=False, confidence=0.0, gate_reason="rag_disabled")
         await self._ensure_initialized()
         hits = await self.retriever.retrieve(query)
         if not hits:
-            return RAGResult(grounded=False, confidence=0.0)
+            return RAGResult(grounded=False, confidence=0.0, gate_reason="no_hits")
 
         confidence = max(0.0, min(1.0, hits[0].rerank_score))
         if confidence < self.settings.rag_confidence_threshold:
@@ -78,6 +87,17 @@ class RAGService:
                 grounded=False,
                 confidence=confidence,
                 hits=hits,
+                gate_reason="low_confidence",
+            )
+
+        if self._is_time_sensitive(query) and not any(
+            hit.chunk.freshness_class in _DYNAMIC_FRESHNESS for hit in hits
+        ):
+            return RAGResult(
+                grounded=False,
+                confidence=confidence,
+                hits=hits,
+                gate_reason="fresh_evidence_required",
             )
 
         citations = [self._citation(hit, index) for index, hit in enumerate(hits, start=1)]
@@ -104,6 +124,7 @@ class RAGService:
             context="\n".join(context_blocks),
             citations=selected_citations,
             hits=selected_hits,
+            gate_reason="grounded",
         )
 
 

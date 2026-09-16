@@ -17,11 +17,16 @@ class Settings(BaseSettings):
     llm_timeout_seconds: float = Field(default=60.0, gt=0)
     llm_temperature: float = Field(default=0.3, ge=0, le=2)
     llm_max_tokens: int = Field(default=800, gt=0)
+    # Some multimodal providers (for example Qwen3.5-Omni) require streaming.
+    # When enabled, the non-stream /chat API aggregates provider stream chunks.
+    llm_force_stream: bool = False
+    llm_modalities: str = "text"
+    llm_extra_body_json: str = "{}"
 
     session_max_messages: int = Field(default=20, ge=2, le=200)
 
     rag_enabled: bool = True
-    rag_knowledge_path: str = "data/knowledge"
+    rag_knowledge_path: str = "data/knowledge/verified"
     rag_chunk_size_chars: int = Field(default=700, ge=100, le=4000)
     rag_chunk_overlap_chars: int = Field(default=100, ge=0, le=1000)
     rag_dense_top_k: int = Field(default=8, ge=1, le=50)
@@ -51,6 +56,16 @@ class Settings(BaseSettings):
     rerank_model: str = "bge-reranker"
     rerank_timeout_seconds: float = Field(default=30.0, gt=0)
 
+    knowledge_source_registry: str = "data/sources/guilin_official_sources.json"
+    knowledge_snapshot_dir: str = "data/snapshots"
+    knowledge_http_timeout_seconds: float = Field(default=30.0, gt=0)
+
+    rag_eval_dataset: str = "eval/rag_eval.jsonl"
+    rag_eval_recall_at_5_min: float = Field(default=0.80, ge=0, le=1)
+    rag_eval_mrr_min: float = Field(default=0.70, ge=0, le=1)
+    rag_eval_grounding_accuracy_min: float = Field(default=0.80, ge=0, le=1)
+    rag_eval_citation_hit_rate_min: float = Field(default=0.80, ge=0, le=1)
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -62,6 +77,10 @@ class Settings(BaseSettings):
         if self.cors_origins.strip() == "*":
             return ["*"]
         return [item.strip() for item in self.cors_origins.split(",") if item.strip()]
+
+    @property
+    def llm_modalities_list(self) -> list[str]:
+        return [item.strip() for item in self.llm_modalities.split(",") if item.strip()]
 
 
 @lru_cache

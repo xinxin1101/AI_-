@@ -1,0 +1,41 @@
+name: P1.5 Knowledge and Eval CI
+
+on:
+  push:
+    branches:
+      - feat/p1.5-knowledge-eval
+  pull_request:
+    branches:
+      - feat/p1-production-rag
+      - main
+
+jobs:
+  knowledge-eval:
+    runs-on: ubuntu-latest
+    env:
+      LLM_MOCK_MODE: "true"
+      RAG_ENABLED: "true"
+      RAG_KNOWLEDGE_PATH: data/knowledge/verified
+      EMBEDDING_PROVIDER: hash
+      RAG_VECTOR_BACKEND: memory
+      RERANK_MODE: local
+      RAG_EVAL_RECALL_AT_5_MIN: "0.75"
+      RAG_EVAL_MRR_MIN: "0.65"
+      RAG_EVAL_GROUNDING_ACCURACY_MIN: "0.75"
+      RAG_EVAL_CITATION_HIT_RATE_MIN: "0.75"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Validate source registry and verified corpus
+        run: python -m scripts.build_knowledge
+      - name: Run regression and P1.5 acceptance tests
+        run: python -m pytest -q --ignore=tests/test_qdrant_integration.py
+      - name: Enforce RAG evaluation floor
+        run: python -m scripts.eval_rag --fail-on-threshold
