@@ -14,5 +14,3 @@ datasources:
     url: http://tempo:3200
     jsonData:
       httpMethod: GET
-      tracesToLogsV2:
-        datasourceUid: prometheus
