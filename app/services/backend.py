@@ -1,6 +1,11 @@
+import logging
+
 from app.core.config import Settings, get_settings
 from app.services.persistence import PostgresRepository, postgres_repository
 from app.services.session_store import SessionRecord, SessionStore, session_store
+
+
+logger = logging.getLogger(__name__)
 
 
 class BackendService:
@@ -19,6 +24,9 @@ class BackendService:
 
     async def startup(self) -> None:
         await self.persistence.start()
+        if self.settings.retention_cleanup_on_startup and self.settings.persistence_enabled:
+            result = await self.persistence.cleanup_retention()
+            logger.info("retention_cleanup_completed", extra={"event": "retention_cleanup", **result})
 
     async def shutdown(self) -> None:
         await self.sessions.close()
