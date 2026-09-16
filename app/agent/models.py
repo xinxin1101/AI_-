@@ -33,6 +33,9 @@ class ToolEvent(BaseModel):
     status: Literal["success", "error", "skipped"]
     provider: str
     summary: str
+    attempts: int | None = Field(default=None, ge=1)
+    latency_ms: float | None = Field(default=None, ge=0)
+    circuit_state: str | None = None
 
 
 class AgentPrepared(BaseModel):

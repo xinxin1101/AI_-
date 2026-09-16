@@ -1,0 +1,118 @@
+name: P2.5 Provider Reliability CI
+
+on:
+  push:
+    branches:
+      - feat/p2.5-provider-reliability
+  pull_request:
+    branches:
+      - feat/p2-agent-tools
+      - main
+  workflow_dispatch:
+
+jobs:
+  acceptance:
+    runs-on: ubuntu-latest
+    env:
+      LLM_MOCK_MODE: "true"
+      RAG_ENABLED: "true"
+      RAG_KNOWLEDGE_PATH: data/knowledge/verified
+      EMBEDDING_PROVIDER: "hash"
+      RAG_VECTOR_BACKEND: "memory"
+      RERANK_MODE: "local"
+      AGENT_ENABLED: "true"
+      TOOL_MOCK_MODE: "true"
+      AGENT_EVAL_INTENT_ACCURACY_MIN: "0.90"
+      AGENT_EVAL_TOOL_SELECTION_ACCURACY_MIN: "0.90"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Validate knowledge registry
+        run: python -m scripts.build_knowledge
+
+      - name: Run P0-P2.5 acceptance tests
+        run: python -m pytest -q --ignore=tests/test_qdrant_integration.py
+
+      - name: Enforce RAG evaluation floor
+        run: python -m scripts.eval_rag --fail-on-threshold
+
+      - name: Enforce intent and tool-selection floor
+        run: python -m scripts.eval_agent --fail-on-threshold
+
+  qdrant-integration:
+    runs-on: ubuntu-latest
+    services:
+      qdrant:
+        image: qdrant/qdrant:v1.19.1
+        ports:
+          - 6333:6333
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Verify Qdrant regression
+        run: python -m pytest -q tests/test_qdrant_integration.py
+
+  open-meteo-live-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Open-Meteo live smoke (non-blocking)
+        continue-on-error: true
+        env:
+          TOOL_MOCK_MODE: "false"
+          WEATHER_PROVIDER: open_meteo
+          TOOL_RETRY_ATTEMPTS: "1"
+          TOOL_TIMEOUT_SECONDS: "10"
+        run: python -m scripts.live_provider_smoke --open-meteo
+
+  amap-live-smoke:
+    runs-on: ubuntu-latest
+    env:
+      AMAP_API_KEY: ${{ secrets.AMAP_API_KEY }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: AMap live smoke
+        if: ${{ env.AMAP_API_KEY != '' }}
+        env:
+          TOOL_MOCK_MODE: "false"
+          SCENIC_PROVIDER: amap
+          ROUTE_PROVIDER: amap
+          TOOL_RETRY_ATTEMPTS: "1"
+          TOOL_TIMEOUT_SECONDS: "10"
+        run: python -m scripts.live_provider_smoke --amap
+      - name: Explain skipped AMap smoke
+        if: ${{ env.AMAP_API_KEY == '' }}
+        run: echo "AMAP_API_KEY repository secret is not configured; live AMap smoke skipped."

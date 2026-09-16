@@ -5,6 +5,7 @@ import httpx
 from app.agent.models import ToolEvidence
 from app.core.config import Settings
 from app.tools.base import ToolExecutionError, WeatherInput
+from app.tools.reliability import ProviderHTTPResult, ResilientHTTPClient
 
 
 _WEATHER_CODES = {
@@ -31,62 +32,110 @@ class MockWeatherProvider:
             observed_at=datetime.now(timezone.utc).isoformat(),
             freshness_class="realtime",
             confidence=1.0,
-            metadata={"mock": True, "location": request.location},
+            metadata={
+                "mock": True,
+                "location": request.location,
+                "provider_attempts": 1,
+                "provider_latency_ms": 0.0,
+                "circuit_state": "closed",
+            },
         )
 
 
 class OpenMeteoWeatherProvider:
     name = "open_meteo"
-    _ALIASES = {"漓江": "桂林", "象鼻山": "桂林", "象山": "桂林", "两江四湖": "桂林", "龙脊梯田": "龙胜"}
+    _ALIASES = {
+        "漓江": "桂林",
+        "象鼻山": "桂林",
+        "象山": "桂林",
+        "两江四湖": "桂林",
+        "龙脊梯田": "龙胜",
+    }
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
         self.settings = settings
-
-    async def _geocode(self, client: httpx.AsyncClient, location: str) -> tuple[float, float, str]:
-        search_name = self._ALIASES.get(location, location)
-        response = await client.get(
-            self.settings.open_meteo_geocoding_url,
-            params={"name": search_name, "count": 1, "language": "zh", "countryCode": "CN"},
+        self.http = ResilientHTTPClient(
+            settings,
+            self.name,
+            transport=transport,
         )
-        response.raise_for_status()
-        results = response.json().get("results") or []
+
+    def _validate_payload(self, payload: dict, operation: str) -> None:
+        if payload.get("error"):
+            self.http.record_provider_failure()
+            reason = payload.get("reason") or payload.get("message") or "provider error"
+            raise ToolExecutionError(f"open_meteo {operation} rejected request: {reason}")
+
+    async def _geocode(
+        self,
+        location: str,
+    ) -> tuple[float, float, str, ProviderHTTPResult]:
+        search_name = self._ALIASES.get(location, location)
+        result = await self.http.get_json(
+            self.settings.open_meteo_geocoding_url,
+            params={
+                "name": search_name,
+                "count": 1,
+                "language": "zh",
+                "countryCode": "CN",
+            },
+        )
+        self._validate_payload(result.payload, "geocoding")
+        results = result.payload.get("results") or []
         if not results:
+            self.http.record_provider_failure()
             raise ToolExecutionError(f"weather location not found: {location}")
         first = results[0]
-        return float(first["latitude"]), float(first["longitude"]), str(first.get("name") or location)
+        try:
+            lat = float(first["latitude"])
+            lon = float(first["longitude"])
+        except (KeyError, TypeError, ValueError) as exc:
+            self.http.record_provider_failure()
+            raise ToolExecutionError("open_meteo geocoding contract mismatch") from exc
+        self.http.record_success()
+        return lat, lon, str(first.get("name") or location), result
 
     async def get(self, request: WeatherInput) -> ToolEvidence:
-        try:
-            timeout = httpx.Timeout(self.settings.tool_timeout_seconds)
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                lat, lon, resolved = await self._geocode(client, request.location)
-                response = await client.get(
-                    self.settings.open_meteo_forecast_url,
-                    params={
-                        "latitude": lat,
-                        "longitude": lon,
-                        "daily": "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max",
-                        "timezone": "Asia/Shanghai",
-                        "forecast_days": 16,
-                    },
-                )
-                response.raise_for_status()
-                payload = response.json()
-        except (httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
-            raise ToolExecutionError("weather provider request failed") from exc
-
-        daily = payload.get("daily") or {}
+        lat, lon, resolved, geocode_result = await self._geocode(request.location)
+        forecast_result = await self.http.get_json(
+            self.settings.open_meteo_forecast_url,
+            params={
+                "latitude": lat,
+                "longitude": lon,
+                "daily": (
+                    "weather_code,temperature_2m_max,temperature_2m_min,"
+                    "precipitation_probability_max"
+                ),
+                "timezone": "Asia/Shanghai",
+                "forecast_days": 16,
+            },
+        )
+        self._validate_payload(forecast_result.payload, "forecast")
+        daily = forecast_result.payload.get("daily") or {}
         dates = daily.get("time") or []
         target = request.target_date.isoformat()
         if target not in dates:
+            self.http.record_provider_failure()
             raise ToolExecutionError("weather provider did not return requested date")
         idx = dates.index(target)
-        code = int((daily.get("weather_code") or [0])[idx])
-        tmax = (daily.get("temperature_2m_max") or [None])[idx]
-        tmin = (daily.get("temperature_2m_min") or [None])[idx]
-        rain = (daily.get("precipitation_probability_max") or [None])[idx]
+        try:
+            code = int(daily["weather_code"][idx])
+            tmax = daily["temperature_2m_max"][idx]
+            tmin = daily["temperature_2m_min"][idx]
+            rain = daily["precipitation_probability_max"][idx]
+        except (KeyError, IndexError, TypeError, ValueError) as exc:
+            self.http.record_provider_failure()
+            raise ToolExecutionError("open_meteo forecast contract mismatch") from exc
+        self.http.record_success()
+
         content = (
-            f"{request.location}（天气定位：{resolved}）{target}：{_WEATHER_CODES.get(code, f'天气代码 {code}')}；"
+            f"{request.location}（天气定位：{resolved}）{target}："
+            f"{_WEATHER_CODES.get(code, f'天气代码 {code}')}；"
             f"最高温 {tmax}°C，最低温 {tmin}°C，最大降水概率 {rain}%。"
         )
         return ToolEvidence(
@@ -99,7 +148,16 @@ class OpenMeteoWeatherProvider:
             observed_at=datetime.now(timezone.utc).isoformat(),
             freshness_class="realtime",
             confidence=0.95,
-            metadata={"latitude": lat, "longitude": lon, "resolved_location": resolved},
+            metadata={
+                "latitude": lat,
+                "longitude": lon,
+                "resolved_location": resolved,
+                "provider_attempts": geocode_result.attempts + forecast_result.attempts,
+                "provider_latency_ms": round(
+                    geocode_result.latency_ms + forecast_result.latency_ms, 2
+                ),
+                "circuit_state": self.http.circuit_state,
+            },
         )
 
 
