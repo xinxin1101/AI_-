@@ -32,7 +32,7 @@ class ItineraryInput(BaseModel):
     interests: list[str] = Field(default_factory=list, max_length=8)
 
 
-_KNOWN_PLACES = (
+KNOWN_PLACES = (
     "龙脊梯田", "独秀峰王城", "两江四湖", "象鼻山", "桂林北站", "桂林站",
     "阳朔西街", "阳朔", "漓江", "象山", "桂林",
 )
@@ -89,11 +89,24 @@ def resolve_target_date(query: str) -> date:
     return today
 
 
+def find_known_places(text: str) -> list[str]:
+    """Return known Guilin-domain places in textual order, without duplicates."""
+    matches: list[tuple[int, int, str]] = []
+    for order, place in enumerate(KNOWN_PLACES):
+        start = text.find(place)
+        if start >= 0:
+            matches.append((start, order, place))
+    matches.sort()
+    result: list[str] = []
+    for _, _, place in matches:
+        if place not in result:
+            result.append(place)
+    return result
+
+
 def extract_known_place(query: str, default: str = "桂林") -> str:
-    for place in _KNOWN_PLACES:
-        if place in query:
-            return place
-    return default
+    places = find_known_places(query)
+    return places[0] if places else default
 
 
 def parse_weather_input(query: str) -> WeatherInput:
@@ -131,7 +144,7 @@ def parse_itinerary_input(query: str) -> ItineraryInput:
         if match:
             days = cn[match.group(1)]
     interests = [
-        place for place in _KNOWN_PLACES
+        place for place in KNOWN_PLACES
         if place in query and place not in {"桂林", "桂林站", "桂林北站"}
     ]
     return ItineraryInput(days=days, interests=interests[:8])
