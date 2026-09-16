@@ -1,0 +1,64 @@
+name: P2 Agent Tools CI
+
+on:
+  push:
+    branches:
+      - feat/p2-agent-tools
+  pull_request:
+    branches:
+      - feat/p1.5-knowledge-eval
+      - main
+
+jobs:
+  acceptance:
+    runs-on: ubuntu-latest
+    env:
+      LLM_MOCK_MODE: "true"
+      RAG_ENABLED: "true"
+      RAG_KNOWLEDGE_PATH: data/knowledge/verified
+      EMBEDDING_PROVIDER: "hash"
+      RAG_VECTOR_BACKEND: "memory"
+      RERANK_MODE: "local"
+      AGENT_ENABLED: "true"
+      TOOL_MOCK_MODE: "true"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Validate knowledge registry
+        run: python -m scripts.build_knowledge
+
+      - name: Run P0-P2 acceptance tests
+        run: python -m pytest -q --ignore=tests/test_qdrant_integration.py
+
+      - name: Enforce RAG evaluation floor
+        run: python -m scripts.eval_rag --fail-on-threshold
+
+  qdrant-integration:
+    runs-on: ubuntu-latest
+    services:
+      qdrant:
+        image: qdrant/qdrant:v1.19.1
+        ports:
+          - 6333:6333
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Verify Qdrant regression
+        run: python -m pytest -q tests/test_qdrant_integration.py

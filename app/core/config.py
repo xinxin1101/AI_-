@@ -17,8 +17,6 @@ class Settings(BaseSettings):
     llm_timeout_seconds: float = Field(default=60.0, gt=0)
     llm_temperature: float = Field(default=0.3, ge=0, le=2)
     llm_max_tokens: int = Field(default=800, gt=0)
-    # Some multimodal providers (for example Qwen3.5-Omni) require streaming.
-    # When enabled, the non-stream /chat API aggregates provider stream chunks.
     llm_force_stream: bool = False
     llm_modalities: str = "text"
     llm_extra_body_json: str = "{}"
@@ -65,6 +63,23 @@ class Settings(BaseSettings):
     rag_eval_mrr_min: float = Field(default=0.70, ge=0, le=1)
     rag_eval_grounding_accuracy_min: float = Field(default=0.80, ge=0, le=1)
     rag_eval_citation_hit_rate_min: float = Field(default=0.80, ge=0, le=1)
+
+    # P2 agent/tool configuration. CI keeps TOOL_MOCK_MODE=true so external
+    # provider availability never determines acceptance results.
+    agent_enabled: bool = True
+    tool_mock_mode: bool = True
+    tool_timeout_seconds: float = Field(default=15.0, gt=0, le=120)
+    tool_max_text_length: int = Field(default=120, ge=20, le=500)
+
+    weather_provider: str = "open_meteo"
+    open_meteo_geocoding_url: str = "https://geocoding-api.open-meteo.com/v1/search"
+    open_meteo_forecast_url: str = "https://api.open-meteo.com/v1/forecast"
+
+    scenic_provider: str = "amap"
+    route_provider: str = "amap"
+    amap_api_key: str = ""
+    amap_base_url: str = "https://restapi.amap.com"
+    amap_region: str = "桂林"
 
     model_config = SettingsConfigDict(
         env_file=".env",
