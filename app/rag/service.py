@@ -6,6 +6,7 @@ from app.rag.embeddings import create_embedding_provider
 from app.rag.loader import load_documents
 from app.rag.models import Citation, RAGResult, RetrievalHit
 from app.rag.retrieval import HybridRetriever
+from app.rag.text import tokenize
 from app.rag.vector_store import create_vector_store
 
 
@@ -19,6 +20,12 @@ _TIME_SENSITIVE_TERMS = (
     "多少钱", "天气", "班次", "是否开放", "暂停", "关闭", "恢复开放",
 )
 _DYNAMIC_FRESHNESS = {"dynamic", "volatile", "realtime"}
+_GENERIC_METADATA_TOKENS = {
+    "介绍", "一下", "历史", "景区", "旅游", "主要", "哪些", "什么", "怎么", "如何",
+    "附近", "今天", "明天", "后天", "天气", "开放", "时间", "值得", "游览", "方式",
+    "核心", "代表", "区域", "组成", "官网", "多少", "市区", "程序", "打卡", "攻略",
+    "线路", "服务", "概况",
+}
 
 
 class RAGService:
@@ -58,6 +65,35 @@ class RAGService:
     def _is_time_sensitive(query: str) -> bool:
         return any(term in query for term in _TIME_SENSITIVE_TERMS)
 
+    @staticmethod
+    def _metadata_anchor_tokens(text: str) -> set[str]:
+        return {
+            token
+            for token in tokenize(text)
+            if len(token) >= 2 and token not in _GENERIC_METADATA_TOKENS
+        }
+
+    def _has_hash_metadata_anchor(self, query: str, hits: list[RetrievalHit]) -> bool:
+        """Protect deterministic HashEmbedding from collision-only grounding.
+
+        Hash embeddings are a CI/RC fallback rather than a semantic production model.
+        A query may receive a dense score from hash collisions even when it names an
+        entity outside the Guilin corpus. Under the hash provider we therefore require
+        at least one meaningful lexical anchor against document title/tags before the
+        confidence score may authorize generation. Real embedding providers are not
+        constrained by this deterministic safeguard.
+        """
+        if self.settings.embedding_provider != "hash":
+            return True
+        query_tokens = self._metadata_anchor_tokens(query)
+        if not query_tokens:
+            return False
+        for hit in hits:
+            metadata = " ".join((hit.chunk.title, *hit.chunk.tags))
+            if query_tokens & self._metadata_anchor_tokens(metadata):
+                return True
+        return False
+
     def _citation(self, hit: RetrievalHit, index: int) -> Citation:
         snippet = hit.chunk.text.strip().replace("\n", " ")
         if len(snippet) > self.settings.rag_citation_snippet_chars:
@@ -82,6 +118,13 @@ class RAGService:
             return RAGResult(grounded=False, confidence=0.0, gate_reason="no_hits")
 
         confidence = max(0.0, min(1.0, hits[0].rerank_score))
+        if not self._has_hash_metadata_anchor(query, hits):
+            return RAGResult(
+                grounded=False,
+                confidence=confidence,
+                hits=hits,
+                gate_reason="low_confidence",
+            )
         if confidence < self.settings.rag_confidence_threshold:
             return RAGResult(
                 grounded=False,

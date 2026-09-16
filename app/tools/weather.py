@@ -1,3 +1,4 @@
+import time
 from datetime import datetime, timezone
 
 import httpx
@@ -51,12 +52,15 @@ class OpenMeteoWeatherProvider:
         "两江四湖": "桂林",
         "龙脊梯田": "龙胜",
     }
-    # This project is Guilin-domain specific. Open-Meteo geocoding can fuzzy-match
-    # the Chinese name "桂林" to a different place, so the canonical city location
-    # is pinned instead of trusting the provider's first fuzzy result.
+    # The application is Guilin-domain specific. Open-Meteo fuzzy geocoding has
+    # resolved both 桂林 and 龙胜 to unrelated Chinese places during live RC runs,
+    # so known tourism locations use verified canonical coordinates.
     _KNOWN_COORDINATES = {
         "桂林": (25.2742, 110.2964, "桂林市"),
+        "龙胜": (25.770717, 110.140047, "龙脊梯田风景名胜区"),
     }
+    _MAX_PROVIDER_TIMEOUT_SECONDS = 5.0
+    _FORECAST_CACHE_TTL_SECONDS = 300.0
 
     def __init__(
         self,
@@ -65,11 +69,22 @@ class OpenMeteoWeatherProvider:
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self.settings = settings
+        weather_settings = settings.model_copy(
+            update={
+                "tool_timeout_seconds": min(
+                    settings.tool_timeout_seconds,
+                    self._MAX_PROVIDER_TIMEOUT_SECONDS,
+                )
+            }
+        )
         self.http = ResilientHTTPClient(
-            settings,
+            weather_settings,
             self.name,
             transport=transport,
         )
+        self._forecast_cache: dict[
+            tuple[float, float], tuple[float, dict]
+        ] = {}
 
     def _validate_payload(self, payload: dict, operation: str) -> None:
         if payload.get("error"):
@@ -120,9 +135,18 @@ class OpenMeteoWeatherProvider:
         self.http.record_success()
         return lat, lon, str(first.get("name") or location), result
 
-    async def get(self, request: WeatherInput) -> ToolEvidence:
-        lat, lon, resolved, geocode_result = await self._geocode(request.location)
-        forecast_result = await self.http.get_json(
+    async def _forecast(
+        self,
+        lat: float,
+        lon: float,
+    ) -> tuple[dict, ProviderHTTPResult | None, bool]:
+        cache_key = (round(lat, 6), round(lon, 6))
+        cached = self._forecast_cache.get(cache_key)
+        now = time.monotonic()
+        if cached is not None and cached[0] > now:
+            return cached[1], None, True
+
+        result = await self.http.get_json(
             self.settings.open_meteo_forecast_url,
             params={
                 "latitude": lat,
@@ -135,8 +159,21 @@ class OpenMeteoWeatherProvider:
                 "forecast_days": 16,
             },
         )
-        self._validate_payload(forecast_result.payload, "forecast")
-        daily = forecast_result.payload.get("daily") or {}
+        self._validate_payload(result.payload, "forecast")
+        daily = result.payload.get("daily") or {}
+        if not isinstance(daily, dict):
+            self.http.record_provider_failure()
+            raise ToolExecutionError("open_meteo forecast contract mismatch")
+        self.http.record_success()
+        self._forecast_cache[cache_key] = (
+            now + self._FORECAST_CACHE_TTL_SECONDS,
+            daily,
+        )
+        return daily, result, False
+
+    async def get(self, request: WeatherInput) -> ToolEvidence:
+        lat, lon, resolved, geocode_result = await self._geocode(request.location)
+        daily, forecast_result, cache_hit = await self._forecast(lat, lon)
         dates = daily.get("time") or []
         target = request.target_date.isoformat()
         if target not in dates:
@@ -151,12 +188,15 @@ class OpenMeteoWeatherProvider:
         except (KeyError, IndexError, TypeError, ValueError) as exc:
             self.http.record_provider_failure()
             raise ToolExecutionError("open_meteo forecast contract mismatch") from exc
-        self.http.record_success()
 
-        operation_results = [forecast_result]
-        if geocode_result is not None:
-            operation_results.append(geocode_result)
-        provider_attempts = max(item.attempts for item in operation_results)
+        operation_results = [
+            result for result in (forecast_result, geocode_result) if result is not None
+        ]
+        provider_attempts = (
+            max(item.attempts for item in operation_results)
+            if operation_results
+            else None
+        )
         provider_latency = sum(item.latency_ms for item in operation_results)
 
         content = (
@@ -178,8 +218,7 @@ class OpenMeteoWeatherProvider:
                 "latitude": lat,
                 "longitude": lon,
                 "resolved_location": resolved,
-                # attempts is retry depth per provider operation, not the number of
-                # distinct HTTP operations used to fulfill a tool invocation.
+                "cache_hit": cache_hit,
                 "provider_attempts": provider_attempts,
                 "provider_latency_ms": round(provider_latency, 2),
                 "circuit_state": self.http.circuit_state,

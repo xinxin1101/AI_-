@@ -6,6 +6,12 @@ from dataclasses import dataclass
 from app.tools.base import find_known_places
 
 
+_REFERENCE_TERMS = (
+    "那它", "它", "那里", "那边", "这个地方", "那个地方", "这个景点", "那个景点",
+    "刚才那个", "刚才提到的",
+)
+
+
 @dataclass(frozen=True)
 class ContextResolution:
     original_query: str
@@ -51,10 +57,9 @@ class ContextResolver:
         if not subject:
             return ContextResolution(original, original, False)
 
-        pronouns = ("那它", "它", "那里", "那边", "这个地方", "那个地方", "这个景点", "那个景点", "刚才那个", "刚才提到的")
-        if any(item in original for item in pronouns):
+        if any(item in original for item in _REFERENCE_TERMS):
             rewritten = original
-            for item in pronouns:
+            for item in _REFERENCE_TERMS:
                 rewritten = rewritten.replace(item, subject)
             rewritten = re.sub(r"^(那|那么|那就)(?=" + re.escape(subject) + r")", "", rewritten)
             return ContextResolution(original, rewritten, True, "pronoun_reference", subject)
@@ -92,6 +97,11 @@ class ContextResolver:
                     continue
                 content = message.get("content")
                 if not isinstance(content, str):
+                    continue
+                # A referential user turn can contain incidental place names that are
+                # not the conversation subject (e.g. "它离桂林市区多远？"). Do not
+                # let those names steal the subject from the earlier explicit turn.
+                if role == "user" and any(term in content for term in _REFERENCE_TERMS):
                     continue
                 places = [place for place in find_known_places(content) if place not in excluded]
                 if places:
