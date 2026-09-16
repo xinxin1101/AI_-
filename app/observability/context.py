@@ -42,7 +42,8 @@ class RequestContextMiddleware:
             return
 
         trace_id = f"tr_{uuid4().hex}"
-        token = trace_id_var.set(trace_id)
+        trace_token = trace_id_var.set(trace_id)
+        session_token = session_id_var.set(None)
         started = perf_counter()
         status_code = 500
         path = privacy_redactor.text(scope.get("path", "")) or ""
@@ -75,4 +76,5 @@ class RequestContextMiddleware:
                     "duration_ms": duration_ms,
                 },
             )
-            trace_id_var.reset(token)
+            session_id_var.reset(session_token)
+            trace_id_var.reset(trace_token)
