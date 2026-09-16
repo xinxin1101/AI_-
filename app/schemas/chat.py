@@ -3,6 +3,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from app.rag.models import Citation
+
 
 class SessionCreateResponse(BaseModel):
     session_id: str
@@ -18,6 +20,9 @@ class ChatResponse(BaseModel):
     trace_id: str
     session_id: str
     answer: str
+    grounded: bool = False
+    confidence: float = 0.0
+    citations: list[Citation] = Field(default_factory=list)
 
 
 class FeedbackRequest(BaseModel):
