@@ -88,6 +88,9 @@ async def chat(request: ChatRequest) -> ChatResponse:
         intent=prepared.intent.value,
         gate_reason=prepared.gate_reason,
         tool_calls=prepared.tool_calls,
+        standalone_query=prepared.standalone_query,
+        context_resolved=prepared.context_resolved,
+        context_resolution_reason=prepared.context_resolution_reason,
     )
 
 
@@ -115,6 +118,9 @@ async def chat_stream(request: ChatRequest) -> StreamingResponse:
                 "intent": prepared.intent.value,
                 "gate_reason": prepared.gate_reason,
                 "tool_calls": [item.model_dump() for item in prepared.tool_calls],
+                "standalone_query": prepared.standalone_query,
+                "context_resolved": prepared.context_resolved,
+                "context_resolution_reason": prepared.context_resolution_reason,
             },
         )
 
@@ -166,6 +172,7 @@ async def chat_stream(request: ChatRequest) -> StreamingResponse:
                 "session_id": session.session_id,
                 "grounded": prepared.grounded,
                 "intent": prepared.intent.value,
+                "context_resolved": prepared.context_resolved,
             },
         )
 

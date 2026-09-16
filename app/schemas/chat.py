@@ -27,6 +27,9 @@ class ChatResponse(BaseModel):
     intent: str = "knowledge"
     gate_reason: str | None = None
     tool_calls: list[ToolEvent] = Field(default_factory=list)
+    standalone_query: str | None = None
+    context_resolved: bool = False
+    context_resolution_reason: str | None = None
 
 
 class FeedbackRequest(BaseModel):

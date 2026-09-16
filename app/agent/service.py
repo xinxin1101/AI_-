@@ -2,6 +2,7 @@ from collections.abc import AsyncIterator
 
 from langgraph.graph import END, START, StateGraph
 
+from app.agent.context import context_resolver
 from app.agent.models import AgentPrepared, AgentState, Intent, ToolEvent, ToolEvidence
 from app.agent.router import classify_intent
 from app.core.config import Settings, get_settings
@@ -39,13 +40,25 @@ class AgentService:
         self.guard = ToolParameterGuard(self.settings)
         self.graph = self._build_graph()
 
+    @staticmethod
+    def _active_query(state: AgentState) -> str:
+        return state.get("standalone_query") or state["query"]
+
+    async def _resolve_context(self, state: AgentState) -> dict:
+        resolution = context_resolver.resolve(state.get("history", []), state["query"])
+        return {
+            "standalone_query": resolution.standalone_query,
+            "context_resolved": resolution.resolved,
+            "context_resolution_reason": resolution.reason,
+        }
+
     async def _rag_probe(self, state: AgentState) -> dict:
-        return {"rag_result": await rag_service.retrieve(state["query"])}
+        return {"rag_result": await rag_service.retrieve(self._active_query(state))}
 
     async def _route_intent(self, state: AgentState) -> dict:
         rag_result = state.get("rag_result")
         gate_reason = rag_result.gate_reason if rag_result else None
-        return {"intent": classify_intent(state["query"], gate_reason).value}
+        return {"intent": classify_intent(self._active_query(state), gate_reason).value}
 
     @staticmethod
     def _route_after_intent(state: AgentState) -> str:
@@ -84,13 +97,9 @@ class AgentService:
 
     async def _weather(self, state: AgentState) -> dict:
         try:
-            params = self.guard.weather(parse_weather_input(state["query"]))
+            params = self.guard.weather(parse_weather_input(self._active_query(state)))
             evidence = await self.tools.weather.get(params)
-            event = self._success_event(
-                "weather",
-                self.tools.weather.name,
-                evidence,
-            )
+            event = self._success_event("weather", self.tools.weather.name, evidence)
             return {"tool_evidence": [evidence], "tool_calls": [event]}
         except (ToolExecutionError, ValueError) as exc:
             return {
@@ -107,13 +116,9 @@ class AgentService:
 
     async def _scenic(self, state: AgentState) -> dict:
         try:
-            params = self.guard.scenic(parse_scenic_input(state["query"]))
+            params = self.guard.scenic(parse_scenic_input(self._active_query(state)))
             evidence = await self.tools.scenic.get(params)
-            event = self._success_event(
-                "scenic_info",
-                self.tools.scenic.name,
-                evidence,
-            )
+            event = self._success_event("scenic_info", self.tools.scenic.name, evidence)
             return {"tool_evidence": [evidence], "tool_calls": [event]}
         except (ToolExecutionError, ValueError) as exc:
             return {
@@ -130,13 +135,9 @@ class AgentService:
 
     async def _route_tool(self, state: AgentState) -> dict:
         try:
-            params = self.guard.route(parse_route_input(state["query"]))
+            params = self.guard.route(parse_route_input(self._active_query(state)))
             evidence = await self.tools.route.get(params)
-            event = self._success_event(
-                "route",
-                self.tools.route.name,
-                evidence,
-            )
+            event = self._success_event("route", self.tools.route.name, evidence)
             return {"tool_evidence": [evidence], "tool_calls": [event]}
         except (ToolExecutionError, ValueError) as exc:
             return {
@@ -153,7 +154,7 @@ class AgentService:
 
     async def _itinerary(self, state: AgentState) -> dict:
         try:
-            params = parse_itinerary_input(state["query"])
+            params = parse_itinerary_input(self._active_query(state))
             evidence = await self.tools.itinerary.get(params)
             event = self._success_event(
                 "itinerary_planner",
@@ -181,9 +182,7 @@ class AgentService:
         )
         evidence: list[ToolEvidence] = state.get("tool_evidence", [])
         citations = list(rag_result.citations) if rag_result.grounded else []
-        context_blocks = [
-            rag_result.context
-        ] if rag_result.grounded and rag_result.context else []
+        context_blocks = [rag_result.context] if rag_result.grounded and rag_result.context else []
         confidence = rag_result.confidence if rag_result.grounded else 0.0
         citable_tool_evidence = False
 
@@ -238,6 +237,7 @@ class AgentService:
 
     def _build_graph(self):
         builder = StateGraph(AgentState)
+        builder.add_node("context_resolver", self._resolve_context)
         builder.add_node("rag_probe", self._rag_probe)
         builder.add_node("intent_router", self._route_intent)
         builder.add_node(Intent.KNOWLEDGE.value, self._knowledge)
@@ -246,7 +246,8 @@ class AgentService:
         builder.add_node(Intent.ROUTE.value, self._route_tool)
         builder.add_node(Intent.ITINERARY.value, self._itinerary)
         builder.add_node("merge_evidence", self._merge_evidence)
-        builder.add_edge(START, "rag_probe")
+        builder.add_edge(START, "context_resolver")
+        builder.add_edge("context_resolver", "rag_probe")
         builder.add_edge("rag_probe", "intent_router")
         builder.add_conditional_edges(
             "intent_router",
@@ -270,7 +271,8 @@ class AgentService:
         query: str,
     ) -> AgentPrepared:
         if not self.settings.agent_enabled:
-            rag_result = await rag_service.retrieve(query)
+            resolution = context_resolver.resolve(history, query)
+            rag_result = await rag_service.retrieve(resolution.standalone_query)
             return AgentPrepared(
                 intent=Intent.KNOWLEDGE,
                 grounded=rag_result.grounded,
@@ -279,6 +281,9 @@ class AgentService:
                 citations=rag_result.citations,
                 gate_reason=rag_result.gate_reason,
                 fallback_answer=LOW_CONFIDENCE_ANSWER,
+                standalone_query=resolution.standalone_query,
+                context_resolved=resolution.resolved,
+                context_resolution_reason=resolution.reason,
             )
 
         state = await self.graph.ainvoke({"query": query, "history": history})
@@ -291,6 +296,9 @@ class AgentService:
             tool_calls=state.get("tool_calls", []),
             gate_reason=state.get("gate_reason"),
             fallback_answer=state.get("fallback_answer", LOW_CONFIDENCE_ANSWER),
+            standalone_query=state.get("standalone_query", query),
+            context_resolved=bool(state.get("context_resolved", False)),
+            context_resolution_reason=state.get("context_resolution_reason"),
         )
 
     async def complete(

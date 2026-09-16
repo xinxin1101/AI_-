@@ -11,8 +11,9 @@
 - **P2.5 ✅** Provider Contract + Timeout/Retry/Circuit Breaker + Router/Tool Eval
 - **P3 ✅** Redis Session + PostgreSQL Persistence + Trace + Metrics + Readiness
 - **P3.5 ✅ Core** Alembic + JSON Log + PII Redaction/Retention + OpenTelemetry + Prometheus/Grafana + API Auth/Rate Limit + Load Smoke
+- **P3.6 ✅ Core** Context Resolver + Standalone Query + Multi-turn Eval
 
-设计文档：`docs/p1_5_knowledge_eval.md`、`docs/p2_agent_tools.md`、`docs/p2_5_provider_reliability.md`、`docs/p3_production_observability.md`、`docs/p3_5_production_hardening.md`。
+设计文档：`docs/p1_5_knowledge_eval.md`、`docs/p2_agent_tools.md`、`docs/p2_5_provider_reliability.md`、`docs/p3_production_observability.md`、`docs/p3_5_production_hardening.md`、`docs/p3_6_multiturn_context.md`。
 
 ## 生产请求链路
 
@@ -22,6 +23,7 @@
    -> API Key + Rate Limit
    -> FastAPI
    -> Redis short-term session window
+   -> Context Resolver / Standalone Query
    -> LangGraph / RAG / Tool Calling
    -> Provider Reliability Layer
    -> Evidence Merge
@@ -139,16 +141,29 @@ docker compose \
 
 包含 Prometheus、Grafana、OpenTelemetry Collector 和 Tempo。示例 Grafana 管理员密码仅用于本地演示，真实部署必须更换并通过私有网络/Secret 管理保护 `/metrics`、Grafana 和 Collector。
 
+## Multi-turn Context
+
+P3.6 不再只把历史消息交给最终 LLM，而是在 RAG、Intent Router、Tool 之前生成确定性的 `standalone_query`。例如：
+
+```text
+历史：介绍一下象鼻山
+当前：那它今天几点关门？
+Standalone：象鼻山今天几点关门？
+```
+
+`/chat` 和 `/chat/stream` 的 metadata 会暴露 `standalone_query`、`context_resolved`、`context_resolution_reason` 便于调试。当前 Resolver 覆盖旅游客服中常见的代词、省略主语、时间续问、路线目的地省略和推荐列表序号引用；无法可靠解析时保持原 query，不猜测。
+
 ## Provider Reliability / Eval
 
 ```bash
 python -m scripts.build_knowledge
 python -m scripts.eval_rag --fail-on-threshold
 python -m scripts.eval_agent --fail-on-threshold
+python -m scripts.eval_multiturn --fail-on-threshold
 python -m scripts.live_provider_smoke --open-meteo
 ```
 
-高德真实 smoke 仍需要 `AMAP_API_KEY`。当前 RAG/Router 的 `1.0` 仅代表小型确定性回归集，不是生产准确率声明。
+高德真实 smoke 仍需要 `AMAP_API_KEY`。当前 RAG/Router 的 `1.0` 仅代表小型确定性回归集，不是生产准确率声明；Multi-turn Eval 同样是维护用确定性回归集，因此要求当前数据集全部通过。
 
 ## Load Smoke
 
@@ -178,9 +193,9 @@ LLM_MODALITIES=text
 
 以后更换千问型号只改 `LLM_MODEL` 等 Provider 配置，不修改 Agent Graph、RAG 或 API Controller。
 
-## P3.5 CI
+## P3.6 CI
 
-当前硬化验收分为独立 Job：
+当前验收分为独立 Job：
 
 ```text
 acceptance
@@ -191,4 +206,4 @@ load-smoke
 open-meteo-live-smoke
 ```
 
-其中 Alembic 会对真实 PostgreSQL 执行 `upgrade -> downgrade -> upgrade`；迁移后的集成测试验证 PostgreSQL 脱敏/Retention 与 Redis 分布式限流；部署 Job 校验 Compose/Grafana 配置；Load Job 对真实启动的 FastAPI 进程发送并发 HTTP 请求。
+`acceptance` 同时执行 RAG Eval、Intent/Tool Eval 和 Multi-turn Eval；其中 Multi-turn 确定性回归要求 standalone query、resolved flag、intent 和 tool-selection 全部达到 `1.0`。Alembic 继续对真实 PostgreSQL 执行 `upgrade -> downgrade -> upgrade`；迁移后的集成测试继续验证 PostgreSQL 脱敏/Retention 与 Redis 分布式限流；部署 Job 校验 Compose/Grafana 配置；Load Job 对真实启动的 FastAPI 进程发送并发 HTTP 请求。
