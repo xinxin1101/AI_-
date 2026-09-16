@@ -27,4 +27,4 @@ jobs:
       - name: Run tests
         env:
           LLM_MOCK_MODE: "true"
-        run: pytest -q
+        run: python -m pytest -q
