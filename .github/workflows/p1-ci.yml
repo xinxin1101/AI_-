@@ -10,7 +10,7 @@ on:
       - main
 
 jobs:
-  test:
+  acceptance:
     runs-on: ubuntu-latest
     env:
       LLM_MOCK_MODE: "true"
@@ -32,4 +32,27 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Run P0 and P1 acceptance tests
-        run: python -m pytest -q
+        run: python -m pytest -q --ignore=tests/test_qdrant_integration.py
+
+  qdrant-integration:
+    runs-on: ubuntu-latest
+    services:
+      qdrant:
+        image: qdrant/qdrant:v1.19.1
+        ports:
+          - 6333:6333
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Verify Qdrant upsert and query
+        run: python -m pytest -q tests/test_qdrant_integration.py
