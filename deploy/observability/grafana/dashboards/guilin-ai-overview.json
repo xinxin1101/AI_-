@@ -1,0 +1,19 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "panels": [
+    {"type":"stat","title":"Trace Window","id":1,"gridPos":{"h":6,"w":6,"x":0,"y":0},"datasource":{"type":"prometheus","uid":"prometheus"},"targets":[{"expr":"guilin_ai_trace_window_size","refId":"A"}]},
+    {"type":"stat","title":"P95 Latency (ms)","id":2,"gridPos":{"h":6,"w":6,"x":6,"y":0},"datasource":{"type":"prometheus","uid":"prometheus"},"targets":[{"expr":"guilin_ai_latency_p95_ms","refId":"A"}]},
+    {"type":"stat","title":"Fallback Rate","id":3,"gridPos":{"h":6,"w":6,"x":12,"y":0},"datasource":{"type":"prometheus","uid":"prometheus"},"targets":[{"expr":"guilin_ai_fallback_rate","refId":"A"}]},
+    {"type":"stat","title":"Tool Success Rate","id":4,"gridPos":{"h":6,"w":6,"x":18,"y":0},"datasource":{"type":"prometheus","uid":"prometheus"},"targets":[{"expr":"guilin_ai_tool_success_rate","refId":"A"}]},
+    {"type":"timeseries","title":"Latency","id":5,"gridPos":{"h":8,"w":12,"x":0,"y":6},"datasource":{"type":"prometheus","uid":"prometheus"},"targets":[{"expr":"guilin_ai_latency_p50_ms","legendFormat":"p50","refId":"A"},{"expr":"guilin_ai_latency_p95_ms","legendFormat":"p95","refId":"B"}]},
+    {"type":"timeseries","title":"Intent Distribution","id":6,"gridPos":{"h":8,"w":12,"x":12,"y":6},"datasource":{"type":"prometheus","uid":"prometheus"},"targets":[{"expr":"guilin_ai_intent_count","legendFormat":"{{intent}}","refId":"A"}]}
+  ],
+  "schemaVersion": 41,
+  "tags": ["ai-agent", "guilin"],
+  "templating": {"list": []},
+  "time": {"from": "now-1h", "to": "now"},
+  "title": "Guilin Tourism AI Overview",
+  "uid": "guilin-ai-overview",
+  "version": 1
+}

@@ -1,0 +1,68 @@
+services:
+  ai-api:
+    environment:
+      OTEL_ENABLED: "true"
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318/v1/traces
+    depends_on:
+      otel-collector:
+        condition: service_started
+
+  prometheus:
+    image: prom/prometheus:v3.13.3
+    container_name: guilin-tourism-prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+    volumes:
+      - ./deploy/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    restart: unless-stopped
+
+  tempo:
+    image: grafana/tempo:3.0.3
+    container_name: guilin-tourism-tempo
+    command: ["-config.file=/etc/tempo.yml"]
+    volumes:
+      - ./deploy/observability/tempo.yml:/etc/tempo.yml:ro
+      - tempo_data:/var/tempo
+    ports:
+      - "3200:3200"
+    restart: unless-stopped
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.160.0
+    container_name: guilin-tourism-otel
+    command: ["--config=/etc/otelcol-contrib/config.yml"]
+    volumes:
+      - ./deploy/observability/otel-collector.yml:/etc/otelcol-contrib/config.yml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+    depends_on:
+      - tempo
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:13.2.1
+    container_name: guilin-tourism-grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./deploy/observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+      - tempo
+    restart: unless-stopped
+
+volumes:
+  prometheus_data:
+  tempo_data:
+  grafana_data:

@@ -30,14 +30,39 @@ class Settings(BaseSettings):
     redis_prefix: str = "guilin-ai"
     redis_socket_timeout_seconds: float = Field(default=3.0, gt=0, le=30)
 
-    # P3 durable persistence.
+    # P3 durable persistence. P3.5 prefers Alembic migrations over runtime DDL.
     persistence_enabled: bool = False
     database_url: str = "postgresql://guilin:guilin@localhost:5432/guilin_ai"
     database_min_pool_size: int = Field(default=1, ge=1, le=20)
     database_max_pool_size: int = Field(default=10, ge=1, le=50)
     database_command_timeout_seconds: float = Field(default=10.0, gt=0, le=120)
-    database_auto_create: bool = True
+    database_auto_create: bool = False
     metrics_window_size: int = Field(default=1000, ge=50, le=100000)
+
+    # P3.5 privacy and data retention.
+    pii_redaction_enabled: bool = True
+    trace_retention_days: int = Field(default=30, ge=1, le=3650)
+    message_retention_days: int = Field(default=30, ge=1, le=3650)
+    feedback_retention_days: int = Field(default=90, ge=1, le=3650)
+    retention_cleanup_on_startup: bool = False
+
+    # P3.5 API security and distributed rate limiting.
+    api_auth_enabled: bool = False
+    api_keys: str = ""
+    rate_limit_enabled: bool = False
+    rate_limit_backend: str = "redis"
+    rate_limit_requests: int = Field(default=60, ge=1, le=100000)
+    rate_limit_window_seconds: int = Field(default=60, ge=1, le=86400)
+    rate_limit_redis_url: str = ""
+    security_bypass_paths: str = "/,/health,/ready,/metrics,/docs,/redoc,/openapi.json"
+
+    # P3.5 structured logging and OpenTelemetry.
+    log_level: str = "INFO"
+    log_json: bool = True
+    otel_enabled: bool = False
+    otel_service_name: str = "guilin-tourism-ai"
+    otel_exporter_otlp_endpoint: str = "http://localhost:4318/v1/traces"
+    otel_excluded_urls: str = "/health,/ready,/metrics"
 
     rag_enabled: bool = True
     rag_knowledge_path: str = "data/knowledge/verified"
@@ -90,7 +115,7 @@ class Settings(BaseSettings):
     tool_retry_max_delay_seconds: float = Field(default=2.0, ge=0, le=30)
     tool_circuit_failure_threshold: int = Field(default=3, ge=1, le=20)
     tool_circuit_recovery_seconds: float = Field(default=30.0, ge=1, le=600)
-    tool_http_user_agent: str = "guilin-tourism-ai/0.3.0"
+    tool_http_user_agent: str = "guilin-tourism-ai/0.3.5"
 
     weather_provider: str = "open_meteo"
     open_meteo_geocoding_url: str = "https://geocoding-api.open-meteo.com/v1/search"
@@ -122,6 +147,14 @@ class Settings(BaseSettings):
     @property
     def llm_modalities_list(self) -> list[str]:
         return [item.strip() for item in self.llm_modalities.split(",") if item.strip()]
+
+    @property
+    def api_key_list(self) -> list[str]:
+        return [item.strip() for item in self.api_keys.split(",") if item.strip()]
+
+    @property
+    def security_bypass_path_list(self) -> list[str]:
+        return [item.strip() for item in self.security_bypass_paths.split(",") if item.strip()]
 
 
 @lru_cache

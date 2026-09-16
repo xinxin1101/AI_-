@@ -1,11 +1,11 @@
 import json
 from collections.abc import AsyncIterator
-from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, status
 from fastapi.responses import StreamingResponse
 
 from app.agent.service import agent_service
+from app.observability.context import current_trace_id, session_id_var
 from app.observability.tracing import trace_recorder
 from app.rag.service import LOW_CONFIDENCE_ANSWER
 from app.schemas.chat import ChatRequest, ChatResponse
@@ -17,7 +17,7 @@ router = APIRouter(tags=["chat"])
 
 
 def _trace_id() -> str:
-    return f"tr_{uuid4().hex}"
+    return current_trace_id()
 
 
 def _sse(event: str, payload: dict) -> str:
@@ -28,6 +28,7 @@ def _sse(event: str, payload: dict) -> str:
 @router.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest) -> ChatResponse:
     session = await backend_service.get_or_create(request.session_id)
+    session_id_var.set(session.session_id)
     history = await backend_service.history(session.session_id)
     trace_id = _trace_id()
     trace = trace_recorder.start(trace_id, session.session_id, request.message)
@@ -93,6 +94,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
 @router.post("/chat/stream")
 async def chat_stream(request: ChatRequest) -> StreamingResponse:
     session = await backend_service.get_or_create(request.session_id)
+    session_id_var.set(session.session_id)
     history = await backend_service.history(session.session_id)
     trace_id = _trace_id()
     trace = trace_recorder.start(trace_id, session.session_id, request.message)
@@ -100,6 +102,7 @@ async def chat_stream(request: ChatRequest) -> StreamingResponse:
     prepared = await agent_service.prepare(history, request.message)
 
     async def event_generator() -> AsyncIterator[str]:
+        session_id_var.set(session.session_id)
         chunks: list[str] = []
         yield _sse(
             "meta",

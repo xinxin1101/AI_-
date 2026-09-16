@@ -6,6 +6,7 @@ from app.agent.models import AgentPrepared
 from app.core.config import Settings, get_settings
 from app.observability.metrics import MetricsRegistry, metrics_registry
 from app.observability.models import LLMUsage, TraceRecord
+from app.observability.otel import telemetry_runtime
 from app.services.persistence import PostgresRepository, postgres_repository
 
 
@@ -31,6 +32,7 @@ class TraceRecorder:
         self.metrics = metrics or metrics_registry
 
     def start(self, trace_id: str, session_id: str, request_message: str) -> TraceContext:
+        telemetry_runtime.annotate_current_span(app_trace_id=trace_id, session_id=session_id)
         return TraceContext(
             trace_id=trace_id,
             session_id=session_id,
@@ -67,6 +69,16 @@ class TraceRecorder:
             error=error,
             tool_calls=list(prepared.tool_calls) if prepared else [],
             citations=list(prepared.citations) if prepared else [],
+        )
+        telemetry_runtime.annotate_current_span(
+            intent=record.intent,
+            grounded=record.grounded,
+            fallback=record.fallback,
+            status=record.status,
+            tool_call_count=len(record.tool_calls),
+            citation_count=len(record.citations),
+            latency_ms=record.latency_ms,
+            total_tokens=record.usage.total_tokens if record.usage else None,
         )
         await self.persistence.persist_trace(record)
         await self.metrics.observe(record)
