@@ -40,7 +40,7 @@ class ContextResolver:
                 return ContextResolution(original, rewritten, True, "ordinal_reference", subject)
 
         current_places = find_known_places(original)
-        route = re.match(r"^从(.+?)(?:怎么过去|怎么去|怎么走|如何过去|如何去|如何走|过去|前往)[？?。！!]*$", original)
+        route = re.match(r"^从([^到]+?)(?:怎么过去|怎么去|怎么走|如何过去|如何去|如何走|过去|前往)[？?。！!]*$", original)
         if route:
             subject = self._last_subject(history, exclude=current_places)
             if subject:
@@ -61,7 +61,8 @@ class ContextResolver:
 
         compact = re.sub(r"\s+", "", original)
         if compact.startswith("附近") and not current_places:
-            suffix = "附近有什么？" if compact in {"附近", "附近呢", "附近?", "附近？"} else original
+            nearby_short = {"附近", "附近呢", "附近?", "附近？", "附近呢?", "附近呢？"}
+            suffix = "附近有什么？" if compact in nearby_short else original
             return ContextResolution(original, f"{subject}{suffix}", True, "nearby_ellipsis", subject)
 
         if current_places:
