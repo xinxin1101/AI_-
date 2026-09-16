@@ -1,10 +1,12 @@
 import asyncio
 import json
 from collections.abc import AsyncIterator
+from contextvars import ContextVar
 
 import httpx
 
 from app.core.config import Settings, get_settings
+from app.observability.models import LLMUsage
 
 
 SYSTEM_PROMPT = """你是桂林文旅 AI 智能客服。
@@ -23,6 +25,10 @@ class LLMProviderError(RuntimeError):
 class LLMClient:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
+        self._usage_var: ContextVar[LLMUsage | None] = ContextVar(
+            f"llm_usage_{id(self)}",
+            default=None,
+        )
 
     def _messages(
         self,
@@ -73,6 +79,8 @@ class LLMClient:
         }
         if self.settings.llm_modalities_list:
             payload["modalities"] = self.settings.llm_modalities_list
+        if stream and self.settings.llm_capture_stream_usage:
+            payload["stream_options"] = {"include_usage": True}
         for key, value in self._extra_body().items():
             if key not in {"model", "messages", "stream"}:
                 payload[key] = value
@@ -95,12 +103,38 @@ class LLMClient:
             )
         return f"已收到你的问题：“{message}”。当前没有足够的检索上下文支持事实性回答。"
 
+    def _capture_usage(self, payload: object) -> None:
+        if not isinstance(payload, dict):
+            return
+        usage = payload.get("usage")
+        if not isinstance(usage, dict):
+            return
+        def _int(name: str) -> int | None:
+            value = usage.get(name)
+            return int(value) if isinstance(value, (int, float)) and value >= 0 else None
+        self._usage_var.set(
+            LLMUsage(
+                prompt_tokens=_int("prompt_tokens"),
+                completion_tokens=_int("completion_tokens"),
+                total_tokens=_int("total_tokens"),
+            )
+        )
+
+    def reset_usage(self) -> None:
+        self._usage_var.set(None)
+
+    def consume_usage(self) -> LLMUsage | None:
+        usage = self._usage_var.get()
+        self._usage_var.set(None)
+        return usage
+
     async def complete(
         self,
         history: list[dict[str, str]],
         message: str,
         context: str | None = None,
     ) -> str:
+        self.reset_usage()
         if self.settings.llm_mock_mode:
             await asyncio.sleep(0)
             return self._mock_answer(message, context)
@@ -125,6 +159,7 @@ class LLMClient:
                 )
                 response.raise_for_status()
                 data = response.json()
+                self._capture_usage(data)
                 answer = data["choices"][0]["message"]["content"]
                 if not isinstance(answer, str) or not answer.strip():
                     raise LLMProviderError("LLM provider returned an empty answer")
@@ -138,6 +173,7 @@ class LLMClient:
         message: str,
         context: str | None = None,
     ) -> AsyncIterator[str]:
+        self.reset_usage()
         if self.settings.llm_mock_mode:
             answer = self._mock_answer(message, context)
             for index in range(0, len(answer), 6):
@@ -166,8 +202,12 @@ class LLMClient:
                             continue
                         try:
                             event = json.loads(raw)
+                        except json.JSONDecodeError:
+                            continue
+                        self._capture_usage(event)
+                        try:
                             delta = event["choices"][0].get("delta", {}).get("content")
-                        except (json.JSONDecodeError, KeyError, TypeError):
+                        except (KeyError, IndexError, TypeError):
                             continue
                         if isinstance(delta, str) and delta:
                             yield delta

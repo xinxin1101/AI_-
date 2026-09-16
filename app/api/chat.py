@@ -6,9 +6,11 @@ from fastapi import APIRouter, HTTPException, status
 from fastapi.responses import StreamingResponse
 
 from app.agent.service import agent_service
+from app.observability.tracing import trace_recorder
+from app.rag.service import LOW_CONFIDENCE_ANSWER
 from app.schemas.chat import ChatRequest, ChatResponse
+from app.services.backend import backend_service
 from app.services.llm import LLMProviderError
-from app.services.session_store import session_store
 
 
 router = APIRouter(tags=["chat"])
@@ -25,19 +27,55 @@ def _sse(event: str, payload: dict) -> str:
 
 @router.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest) -> ChatResponse:
-    session = await session_store.get_or_create(request.session_id)
-    history = await session_store.history(session.session_id)
+    session = await backend_service.get_or_create(request.session_id)
+    history = await backend_service.history(session.session_id)
     trace_id = _trace_id()
+    trace = trace_recorder.start(trace_id, session.session_id, request.message)
+    prepared = None
+    agent_service.llm.reset_usage()
     try:
-        prepared, answer = await agent_service.complete(history, request.message)
+        prepared = await agent_service.prepare(history, request.message)
+        if prepared.can_generate:
+            answer = await agent_service.llm.complete(
+                history,
+                request.message,
+                context=prepared.context,
+            )
+        else:
+            answer = prepared.fallback_answer or LOW_CONFIDENCE_ANSWER
+        usage = agent_service.llm.consume_usage()
     except LLMProviderError as exc:
+        usage = agent_service.llm.consume_usage()
+        await trace_recorder.finish(
+            trace,
+            prepared=prepared,
+            status="error",
+            usage=usage,
+            error="llm_provider_error",
+        )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="AI provider is temporarily unavailable",
         ) from exc
 
-    await session_store.append_message(session.session_id, "user", request.message)
-    await session_store.append_message(session.session_id, "assistant", answer)
+    await backend_service.append_message(
+        session.session_id,
+        "user",
+        request.message,
+        trace_id=trace_id,
+    )
+    await backend_service.append_message(
+        session.session_id,
+        "assistant",
+        answer,
+        trace_id=trace_id,
+    )
+    await trace_recorder.finish(
+        trace,
+        prepared=prepared,
+        status="success",
+        usage=usage,
+    )
 
     return ChatResponse(
         trace_id=trace_id,
@@ -54,9 +92,11 @@ async def chat(request: ChatRequest) -> ChatResponse:
 
 @router.post("/chat/stream")
 async def chat_stream(request: ChatRequest) -> StreamingResponse:
-    session = await session_store.get_or_create(request.session_id)
-    history = await session_store.history(session.session_id)
+    session = await backend_service.get_or_create(request.session_id)
+    history = await backend_service.history(session.session_id)
     trace_id = _trace_id()
+    trace = trace_recorder.start(trace_id, session.session_id, request.message)
+    agent_service.llm.reset_usage()
     prepared = await agent_service.prepare(history, request.message)
 
     async def event_generator() -> AsyncIterator[str]:
@@ -80,6 +120,13 @@ async def chat_stream(request: ChatRequest) -> StreamingResponse:
                 chunks.append(chunk)
                 yield _sse("token", {"delta": chunk})
         except LLMProviderError:
+            await trace_recorder.finish(
+                trace,
+                prepared=prepared,
+                status="error",
+                usage=agent_service.llm.consume_usage(),
+                error="llm_provider_error",
+            )
             yield _sse(
                 "error",
                 {
@@ -91,8 +138,24 @@ async def chat_stream(request: ChatRequest) -> StreamingResponse:
             return
 
         answer = "".join(chunks)
-        await session_store.append_message(session.session_id, "user", request.message)
-        await session_store.append_message(session.session_id, "assistant", answer)
+        await backend_service.append_message(
+            session.session_id,
+            "user",
+            request.message,
+            trace_id=trace_id,
+        )
+        await backend_service.append_message(
+            session.session_id,
+            "assistant",
+            answer,
+            trace_id=trace_id,
+        )
+        await trace_recorder.finish(
+            trace,
+            prepared=prepared,
+            status="success",
+            usage=agent_service.llm.consume_usage(),
+        )
         yield _sse(
             "done",
             {
