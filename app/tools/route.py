@@ -142,16 +142,11 @@ class AMapRouteProvider:
             duration_text, distance_text = "未返回耗时", "未返回距离"
 
         mode_cn = {"transit": "公共交通", "walking": "步行", "driving": "驾车"}[request.mode]
-        total_attempts = (
-            origin_result.attempts
-            + destination_result.attempts
-            + route_result.attempts
-        )
-        total_latency = (
-            origin_result.latency_ms
-            + destination_result.latency_ms
-            + route_result.latency_ms
-        )
+        operation_results = (origin_result, destination_result, route_result)
+        # attempts represents retry depth for one provider operation. Summing the
+        # three normal HTTP operations would make a healthy route call look retried.
+        retry_depth = max(item.attempts for item in operation_results)
+        total_latency = sum(item.latency_ms for item in operation_results)
 
         return ToolEvidence(
             evidence_id="amap_route",
@@ -167,7 +162,7 @@ class AMapRouteProvider:
                 "origin": origin,
                 "destination": destination,
                 "mode": request.mode,
-                "provider_attempts": total_attempts,
+                "provider_attempts": retry_depth,
                 "provider_latency_ms": round(total_latency, 2),
                 "circuit_state": self.http.circuit_state,
             },
