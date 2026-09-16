@@ -6,6 +6,7 @@ from app.core.config import Settings
 from app.observability.metrics import MetricsRegistry
 from app.observability.models import LLMUsage
 from app.observability.tracing import TraceRecorder
+from app.rag.models import Citation
 from app.services.backend import BackendService
 from app.services.persistence import PostgresRepository
 from app.services.session_store import RedisSessionStore
@@ -76,6 +77,20 @@ def test_real_redis_and_postgres_round_trip() -> None:
                         circuit_state="closed",
                     )
                 ],
+                citations=[
+                    Citation(
+                        citation_id="C1",
+                        document_id="tool:weather:weather_test",
+                        chunk_id="weather_test",
+                        title="桂林明日天气",
+                        source="Open-Meteo Forecast API",
+                        source_url="https://open-meteo.com/en/docs",
+                        observed_at="2026-09-16T07:00:00+00:00",
+                        snippet="桂林明日天气测试证据",
+                        source_type="tool",
+                        tool_name="weather",
+                    )
+                ],
             )
             trace = recorder.start(trace_id, session.session_id, "明天桂林天气怎么样？")
             await recorder.finish(
@@ -98,6 +113,9 @@ def test_real_redis_and_postgres_round_trip() -> None:
             assert stored["total_tokens"] == 120
             assert stored["tool_calls"][0]["attempts"] == 2
             assert stored["tool_calls"][0]["circuit_state"] == "closed"
+            assert stored["citations"][0]["citation_id"] == "C1"
+            assert stored["citations"][0]["source_type"] == "tool"
+            assert stored["citations"][0]["tool_name"] == "weather"
         finally:
             await backend.shutdown()
 
