@@ -75,6 +75,23 @@ async def run_load(
     }
 
 
+async def _start_local_server(host: str, port: int):
+    import uvicorn
+
+    config = uvicorn.Config("app.main:app", host=host, port=port, log_level="warning")
+    server = uvicorn.Server(config)
+    task = asyncio.create_task(server.serve())
+    for _ in range(200):
+        if server.started:
+            return server, task
+        if task.done():
+            await task
+        await asyncio.sleep(0.05)
+    server.should_exit = True
+    await task
+    raise RuntimeError("local load-test server did not start")
+
+
 async def _main() -> int:
     parser = argparse.ArgumentParser(description="Small concurrent load smoke for the chat API.")
     parser.add_argument("--base-url", default="http://127.0.0.1:8000")
@@ -84,15 +101,27 @@ async def _main() -> int:
     parser.add_argument("--api-key", default="")
     parser.add_argument("--max-p95-ms", type=float, default=2000.0)
     parser.add_argument("--max-error-rate", type=float, default=0.01)
+    parser.add_argument("--self-host", action="store_true", help="Start app.main:app locally for CI smoke testing.")
     args = parser.parse_args()
 
-    result = await run_load(
-        base_url=args.base_url,
-        request_count=args.requests,
-        concurrency=args.concurrency,
-        timeout=args.timeout,
-        api_key=args.api_key or None,
-    )
+    server = None
+    server_task = None
+    if args.self_host:
+        server, server_task = await _start_local_server("127.0.0.1", 8000)
+
+    try:
+        result = await run_load(
+            base_url=args.base_url,
+            request_count=args.requests,
+            concurrency=args.concurrency,
+            timeout=args.timeout,
+            api_key=args.api_key or None,
+        )
+    finally:
+        if server is not None and server_task is not None:
+            server.should_exit = True
+            await server_task
+
     result["thresholds"] = {
         "max_p95_ms": args.max_p95_ms,
         "max_error_rate": args.max_error_rate,
