@@ -51,6 +51,34 @@ class AgentService:
     def _route_after_intent(state: AgentState) -> str:
         return state.get("intent", Intent.KNOWLEDGE.value)
 
+    @staticmethod
+    def _success_event(
+        tool_name: str,
+        provider: str,
+        evidence: ToolEvidence,
+    ) -> ToolEvent:
+        metadata = evidence.metadata
+        attempts = metadata.get("provider_attempts")
+        latency_ms = metadata.get("provider_latency_ms")
+        circuit_state = metadata.get("circuit_state")
+        return ToolEvent(
+            tool_name=tool_name,
+            status="success",
+            provider=provider,
+            summary=evidence.title,
+            attempts=attempts if isinstance(attempts, int) and attempts >= 1 else None,
+            latency_ms=(
+                float(latency_ms)
+                if isinstance(latency_ms, (int, float)) and latency_ms >= 0
+                else None
+            ),
+            circuit_state=(
+                str(circuit_state)
+                if isinstance(circuit_state, str) and circuit_state
+                else None
+            ),
+        )
+
     async def _knowledge(self, state: AgentState) -> dict:
         return {"tool_evidence": [], "tool_calls": []}
 
@@ -58,43 +86,104 @@ class AgentService:
         try:
             params = self.guard.weather(parse_weather_input(state["query"]))
             evidence = await self.tools.weather.get(params)
-            event = ToolEvent(tool_name="weather", status="success", provider=self.tools.weather.name, summary=evidence.title)
+            event = self._success_event(
+                "weather",
+                self.tools.weather.name,
+                evidence,
+            )
             return {"tool_evidence": [evidence], "tool_calls": [event]}
         except (ToolExecutionError, ValueError) as exc:
-            return {"tool_evidence": [], "tool_calls": [ToolEvent(tool_name="weather", status="error", provider=getattr(self.tools.weather, "name", "unknown"), summary=str(exc))]}
+            return {
+                "tool_evidence": [],
+                "tool_calls": [
+                    ToolEvent(
+                        tool_name="weather",
+                        status="error",
+                        provider=getattr(self.tools.weather, "name", "unknown"),
+                        summary=str(exc),
+                    )
+                ],
+            }
 
     async def _scenic(self, state: AgentState) -> dict:
         try:
             params = self.guard.scenic(parse_scenic_input(state["query"]))
             evidence = await self.tools.scenic.get(params)
-            event = ToolEvent(tool_name="scenic_info", status="success", provider=self.tools.scenic.name, summary=evidence.title)
+            event = self._success_event(
+                "scenic_info",
+                self.tools.scenic.name,
+                evidence,
+            )
             return {"tool_evidence": [evidence], "tool_calls": [event]}
         except (ToolExecutionError, ValueError) as exc:
-            return {"tool_evidence": [], "tool_calls": [ToolEvent(tool_name="scenic_info", status="error", provider=getattr(self.tools.scenic, "name", "unknown"), summary=str(exc))]}
+            return {
+                "tool_evidence": [],
+                "tool_calls": [
+                    ToolEvent(
+                        tool_name="scenic_info",
+                        status="error",
+                        provider=getattr(self.tools.scenic, "name", "unknown"),
+                        summary=str(exc),
+                    )
+                ],
+            }
 
     async def _route_tool(self, state: AgentState) -> dict:
         try:
             params = self.guard.route(parse_route_input(state["query"]))
             evidence = await self.tools.route.get(params)
-            event = ToolEvent(tool_name="route", status="success", provider=self.tools.route.name, summary=evidence.title)
+            event = self._success_event(
+                "route",
+                self.tools.route.name,
+                evidence,
+            )
             return {"tool_evidence": [evidence], "tool_calls": [event]}
         except (ToolExecutionError, ValueError) as exc:
-            return {"tool_evidence": [], "tool_calls": [ToolEvent(tool_name="route", status="error", provider=getattr(self.tools.route, "name", "unknown"), summary=str(exc))]}
+            return {
+                "tool_evidence": [],
+                "tool_calls": [
+                    ToolEvent(
+                        tool_name="route",
+                        status="error",
+                        provider=getattr(self.tools.route, "name", "unknown"),
+                        summary=str(exc),
+                    )
+                ],
+            }
 
     async def _itinerary(self, state: AgentState) -> dict:
         try:
             params = parse_itinerary_input(state["query"])
             evidence = await self.tools.itinerary.get(params)
-            event = ToolEvent(tool_name="itinerary_planner", status="success", provider=self.tools.itinerary.name, summary=evidence.title)
+            event = self._success_event(
+                "itinerary_planner",
+                self.tools.itinerary.name,
+                evidence,
+            )
             return {"tool_evidence": [evidence], "tool_calls": [event]}
         except (ToolExecutionError, ValueError) as exc:
-            return {"tool_evidence": [], "tool_calls": [ToolEvent(tool_name="itinerary_planner", status="error", provider=self.tools.itinerary.name, summary=str(exc))]}
+            return {
+                "tool_evidence": [],
+                "tool_calls": [
+                    ToolEvent(
+                        tool_name="itinerary_planner",
+                        status="error",
+                        provider=self.tools.itinerary.name,
+                        summary=str(exc),
+                    )
+                ],
+            }
 
     async def _merge_evidence(self, state: AgentState) -> dict:
-        rag_result: RAGResult = state.get("rag_result") or RAGResult(grounded=False, confidence=0.0)
+        rag_result: RAGResult = state.get("rag_result") or RAGResult(
+            grounded=False,
+            confidence=0.0,
+        )
         evidence: list[ToolEvidence] = state.get("tool_evidence", [])
         citations = list(rag_result.citations) if rag_result.grounded else []
-        context_blocks = [rag_result.context] if rag_result.grounded and rag_result.context else []
+        context_blocks = [
+            rag_result.context
+        ] if rag_result.grounded and rag_result.context else []
         confidence = rag_result.confidence if rag_result.grounded else 0.0
         citable_tool_evidence = False
 
@@ -118,7 +207,9 @@ class AgentService:
                     )
                 )
                 context_blocks.append(
-                    f"[{citation_id}] 实时工具：{item.tool_name}\n来源：{item.source}\n内容：{item.content}\n"
+                    f"[{citation_id}] 实时工具：{item.tool_name}\n"
+                    f"来源：{item.source}\n"
+                    f"内容：{item.content}\n"
                 )
                 confidence = max(confidence, item.confidence)
             else:
@@ -173,7 +264,11 @@ class AgentService:
         builder.add_edge("merge_evidence", END)
         return builder.compile()
 
-    async def prepare(self, history: list[dict[str, str]], query: str) -> AgentPrepared:
+    async def prepare(
+        self,
+        history: list[dict[str, str]],
+        query: str,
+    ) -> AgentPrepared:
         if not self.settings.agent_enabled:
             rag_result = await rag_service.retrieve(query)
             return AgentPrepared(
@@ -198,14 +293,23 @@ class AgentService:
             fallback_answer=state.get("fallback_answer", LOW_CONFIDENCE_ANSWER),
         )
 
-    async def complete(self, history: list[dict[str, str]], query: str) -> tuple[AgentPrepared, str]:
+    async def complete(
+        self,
+        history: list[dict[str, str]],
+        query: str,
+    ) -> tuple[AgentPrepared, str]:
         prepared = await self.prepare(history, query)
         if not prepared.can_generate:
             return prepared, prepared.fallback_answer or LOW_CONFIDENCE_ANSWER
         answer = await self.llm.complete(history, query, context=prepared.context)
         return prepared, answer
 
-    async def stream(self, prepared: AgentPrepared, history: list[dict[str, str]], query: str) -> AsyncIterator[str]:
+    async def stream(
+        self,
+        prepared: AgentPrepared,
+        history: list[dict[str, str]],
+        query: str,
+    ) -> AsyncIterator[str]:
         if not prepared.can_generate:
             text = prepared.fallback_answer or LOW_CONFIDENCE_ANSWER
             for index in range(0, len(text), 12):
