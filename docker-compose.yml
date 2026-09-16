@@ -1,4 +1,17 @@
 services:
+  migrate:
+    build: .
+    container_name: guilin-tourism-migrate
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://guilin:guilin@postgres:5432/guilin_ai
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
   ai-api:
     build: .
     container_name: guilin-tourism-ai
@@ -6,11 +19,16 @@ services:
       - .env
     environment:
       QDRANT_URL: http://qdrant:6333
+      SESSION_BACKEND: redis
       REDIS_URL: redis://redis:6379/0
+      PERSISTENCE_ENABLED: "true"
+      DATABASE_AUTO_CREATE: "false"
       DATABASE_URL: postgresql://guilin:guilin@postgres:5432/guilin_ai
     ports:
       - "8000:8000"
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       qdrant:
         condition: service_healthy
       redis:
