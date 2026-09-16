@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.core.config import Settings
-from app.observability.context import trace_id_var
+from app.observability.context import RequestContextMiddleware, current_trace_id, trace_id_var
 from app.observability.logging import JsonFormatter
 from app.security.middleware import SecurityMiddleware
 from app.security.privacy import PrivacyRedactor
@@ -58,10 +58,7 @@ def test_security_middleware_rejects_bad_key() -> None:
     async def private() -> dict[str, bool]:
         return {"ok": True}
 
-    async def startup() -> None:
-        await service.startup()
-
-    asyncio.run(startup())
+    asyncio.run(service.startup())
     try:
         client = TestClient(app)
         assert client.get("/private").status_code == 401
@@ -69,6 +66,50 @@ def test_security_middleware_rejects_bad_key() -> None:
         assert client.get("/private", headers={"X-API-Key": "test-key"}).status_code == 200
     finally:
         asyncio.run(service.shutdown())
+
+
+def test_security_middleware_returns_429_after_rate_limit() -> None:
+    settings = Settings(
+        api_auth_enabled=True,
+        api_keys="test-key",
+        rate_limit_enabled=True,
+        rate_limit_backend="memory",
+        rate_limit_requests=1,
+        rate_limit_window_seconds=60,
+    )
+    service = SecurityService(settings)
+    app = FastAPI()
+    app.add_middleware(SecurityMiddleware, settings=settings, service=service)
+
+    @app.get("/private")
+    async def private() -> dict[str, bool]:
+        return {"ok": True}
+
+    asyncio.run(service.startup())
+    try:
+        client = TestClient(app)
+        first = client.get("/private", headers={"X-API-Key": "test-key"})
+        second = client.get("/private", headers={"X-API-Key": "test-key"})
+        assert first.status_code == 200
+        assert first.headers["x-ratelimit-remaining"] == "0"
+        assert second.status_code == 429
+        assert second.headers["retry-after"]
+    finally:
+        asyncio.run(service.shutdown())
+
+
+def test_request_context_header_matches_application_trace_id() -> None:
+    app = FastAPI()
+    app.add_middleware(RequestContextMiddleware)
+
+    @app.get("/trace")
+    async def trace() -> dict[str, str]:
+        return {"trace_id": current_trace_id()}
+
+    response = TestClient(app).get("/trace")
+    assert response.status_code == 200
+    assert response.headers["x-trace-id"] == response.json()["trace_id"]
+    assert response.json()["trace_id"].startswith("tr_")
 
 
 def test_json_logging_contains_trace_and_redacts_message() -> None:
