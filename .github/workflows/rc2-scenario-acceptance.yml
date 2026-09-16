@@ -7,7 +7,9 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: rc2-scenario-acceptance-${{ github.ref }}
+  # v2 isolates RC2 from a stale cancelled Actions group observed during RC hardening.
+  # Later pushes on this branch still cancel superseded v2 runs.
+  group: rc2-scenario-acceptance-v2-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
