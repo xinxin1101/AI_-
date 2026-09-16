@@ -1,0 +1,6 @@
+{"id":"knowledge_elephant","message":"象鼻山景区的核心景观是什么？","expected_intent":"knowledge","expected_grounded":true,"min_citations":1}
+{"id":"knowledge_longji","message":"龙脊梯田主要由哪些梯田区域组成？","expected_intent":"knowledge","expected_grounded":true,"min_citations":1}
+{"id":"weather_guilin","message":"明天桂林天气怎么样？","expected_intent":"realtime_weather","expected_grounded":true,"expected_tool":"weather","min_citations":1}
+{"id":"multiturn_intro","session":"tour_followup","message":"介绍一下象鼻山。","expected_intent":"knowledge","expected_grounded":true,"min_citations":1,"expected_context_resolved":false}
+{"id":"multiturn_weather","session":"tour_followup","message":"那它明天天气怎么样？","expected_intent":"realtime_weather","expected_grounded":true,"expected_tool":"weather","min_citations":1,"expected_context_resolved":true,"expected_standalone_contains":"象鼻山"}
+{"id":"ood_fallback","message":"火星基地量子电梯维护周期是多少？","expected_intent":"knowledge","expected_grounded":false,"min_citations":0}

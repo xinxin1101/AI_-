@@ -85,22 +85,27 @@ def test_circuit_breaker_opens_after_consecutive_transient_failures() -> None:
 
 def test_open_meteo_contract_is_parsed_and_carries_reliability_metadata() -> None:
     target = datetime.now(ZoneInfo("Asia/Shanghai")).date() + timedelta(days=1)
+    geocode_calls = 0
 
     def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal geocode_calls
         if request.url.host == "geocoding-api.open-meteo.com":
+            geocode_calls += 1
             return httpx.Response(
                 200,
                 json={
                     "results": [
                         {
-                            "latitude": 25.2742,
-                            "longitude": 110.2964,
-                            "name": "桂林",
+                            "latitude": 29.922,
+                            "longitude": 118.46802,
+                            "name": "ambiguous-guilin",
                         }
                     ]
                 },
             )
         if request.url.host == "api.open-meteo.com":
+            assert request.url.params.get("latitude") == "25.2742"
+            assert request.url.params.get("longitude") == "110.2964"
             return httpx.Response(
                 200,
                 json={
@@ -125,8 +130,10 @@ def test_open_meteo_contract_is_parsed_and_carries_reliability_metadata() -> Non
 
     assert evidence.tool_name == "weather"
     assert "最大降水概率 65%" in evidence.content
-    assert evidence.metadata["provider_attempts"] == 2
+    assert evidence.metadata["resolved_location"] == "桂林市"
+    assert evidence.metadata["provider_attempts"] == 1
     assert evidence.metadata["circuit_state"] == "closed"
+    assert geocode_calls == 0
 
 
 def test_weather_guard_matches_open_meteo_sixteen_day_window() -> None:
@@ -258,4 +265,4 @@ def test_amap_route_contract_geocodes_then_plans_route() -> None:
     assert calls.count("/v3/geocode/geo") == 2
     assert "/v5/direction/driving" in calls
     assert "约 25 分钟" in evidence.content
-    assert evidence.metadata["provider_attempts"] == 3
+    assert evidence.metadata["provider_attempts"] == 1

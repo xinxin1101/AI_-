@@ -51,6 +51,12 @@ class OpenMeteoWeatherProvider:
         "两江四湖": "桂林",
         "龙脊梯田": "龙胜",
     }
+    # This project is Guilin-domain specific. Open-Meteo geocoding can fuzzy-match
+    # the Chinese name "桂林" to a different place, so the canonical city location
+    # is pinned instead of trusting the provider's first fuzzy result.
+    _KNOWN_COORDINATES = {
+        "桂林": (25.2742, 110.2964, "桂林市"),
+    }
 
     def __init__(
         self,
@@ -74,13 +80,18 @@ class OpenMeteoWeatherProvider:
     async def _geocode(
         self,
         location: str,
-    ) -> tuple[float, float, str, ProviderHTTPResult]:
+    ) -> tuple[float, float, str, ProviderHTTPResult | None]:
         search_name = self._ALIASES.get(location, location)
+        known = self._KNOWN_COORDINATES.get(search_name)
+        if known is not None:
+            lat, lon, resolved = known
+            return lat, lon, resolved, None
+
         result = await self.http.get_json(
             self.settings.open_meteo_geocoding_url,
             params={
                 "name": search_name,
-                "count": 1,
+                "count": 5,
                 "language": "zh",
                 "countryCode": "CN",
             },
@@ -90,7 +101,16 @@ class OpenMeteoWeatherProvider:
         if not results:
             self.http.record_provider_failure()
             raise ToolExecutionError(f"weather location not found: {location}")
-        first = results[0]
+
+        def normalized(value: object) -> str:
+            text = str(value or "").strip().replace(" ", "")
+            return text[:-1] if text.endswith("市") else text
+
+        exact = next(
+            (item for item in results if normalized(item.get("name")) == normalized(search_name)),
+            None,
+        )
+        first = exact or results[0]
         try:
             lat = float(first["latitude"])
             lon = float(first["longitude"])
@@ -133,6 +153,12 @@ class OpenMeteoWeatherProvider:
             raise ToolExecutionError("open_meteo forecast contract mismatch") from exc
         self.http.record_success()
 
+        operation_results = [forecast_result]
+        if geocode_result is not None:
+            operation_results.append(geocode_result)
+        provider_attempts = max(item.attempts for item in operation_results)
+        provider_latency = sum(item.latency_ms for item in operation_results)
+
         content = (
             f"{request.location}（天气定位：{resolved}）{target}："
             f"{_WEATHER_CODES.get(code, f'天气代码 {code}')}；"
@@ -152,10 +178,10 @@ class OpenMeteoWeatherProvider:
                 "latitude": lat,
                 "longitude": lon,
                 "resolved_location": resolved,
-                "provider_attempts": geocode_result.attempts + forecast_result.attempts,
-                "provider_latency_ms": round(
-                    geocode_result.latency_ms + forecast_result.latency_ms, 2
-                ),
+                # attempts is retry depth per provider operation, not the number of
+                # distinct HTTP operations used to fulfill a tool invocation.
+                "provider_attempts": provider_attempts,
+                "provider_latency_ms": round(provider_latency, 2),
                 "circuit_state": self.http.circuit_state,
             },
         )

@@ -1,0 +1,122 @@
+name: RC1 Real Qwen E2E
+
+on:
+  push:
+    branches:
+      - rc/rc1-real-qwen-e2e
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      LLM_MOCK_MODE: "true"
+      TOOL_MOCK_MODE: "true"
+      EMBEDDING_PROVIDER: hash
+      RAG_VECTOR_BACKEND: memory
+      RERANK_MODE: local
+      SESSION_BACKEND: memory
+      PERSISTENCE_ENABLED: "false"
+      API_AUTH_ENABLED: "false"
+      RATE_LIMIT_ENABLED: "false"
+      OTEL_ENABLED: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: python -m scripts.build_knowledge
+      - run: python -m pytest -q --ignore=tests/test_qdrant_integration.py --ignore=tests/test_p3_integration.py --ignore=tests/test_p3_5_integration.py
+      - run: python -m scripts.eval_rag --fail-on-threshold
+      - run: python -m scripts.eval_agent --fail-on-threshold
+      - run: python -m scripts.eval_multiturn --fail-on-threshold
+
+  real-qwen-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      APP_ENV: test
+      LLM_MOCK_MODE: "false"
+      LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+      LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
+      LLM_MODEL: ${{ vars.LLM_MODEL }}
+      LLM_FORCE_STREAM: "true"
+      LLM_MODALITIES: text
+      LLM_CAPTURE_STREAM_USAGE: "true"
+      LLM_TIMEOUT_SECONDS: "90"
+      LLM_MAX_TOKENS: "500"
+      TOOL_MOCK_MODE: "false"
+      WEATHER_PROVIDER: open_meteo
+      EMBEDDING_PROVIDER: hash
+      EMBEDDING_DIMENSION: "256"
+      RAG_VECTOR_BACKEND: qdrant
+      QDRANT_URL: http://localhost:6333
+      QDRANT_COLLECTION: guilin_tourism_rc1
+      RERANK_MODE: local
+      SESSION_BACKEND: redis
+      SESSION_TTL_SECONDS: "3600"
+      REDIS_URL: redis://localhost:6379/0
+      PERSISTENCE_ENABLED: "true"
+      DATABASE_URL: postgresql://guilin:guilin@localhost:5432/guilin_ai
+      DATABASE_AUTO_CREATE: "false"
+      API_AUTH_ENABLED: "false"
+      RATE_LIMIT_ENABLED: "false"
+      OTEL_ENABLED: "false"
+      RC1_RESULT_PATH: rc1-results.json
+    services:
+      redis:
+        image: redis:7.4-alpine
+        ports:
+          - 6379:6379
+        options: --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 3s --health-retries 10
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: guilin_ai
+          POSTGRES_USER: guilin
+          POSTGRES_PASSWORD: guilin
+        ports:
+          - 5432:5432
+        options: --health-cmd "pg_isready -U guilin -d guilin_ai" --health-interval 5s --health-timeout 3s --health-retries 10
+      qdrant:
+        image: qdrant/qdrant:v1.19.1
+        ports:
+          - 6333:6333
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Validate secret-backed RC1 configuration
+        shell: bash
+        run: |
+          if [ -z "$LLM_API_KEY" ]; then echo "LLM_API_KEY repository secret is missing"; exit 1; fi
+          if [ -z "$LLM_BASE_URL" ]; then echo "LLM_BASE_URL repository variable is missing"; exit 1; fi
+          if [ -z "$LLM_MODEL" ]; then echo "LLM_MODEL repository variable is missing"; exit 1; fi
+          echo "RC1 provider configuration is present; secret value is not printed."
+      - run: pip install -r requirements.txt
+      - name: Apply PostgreSQL migration
+        run: alembic upgrade head
+      - name: Build verified knowledge corpus
+        run: python -m scripts.build_knowledge
+      - name: Index verified corpus into real Qdrant
+        run: python -m scripts.reindex_rag
+      - name: Real Qwen streaming provider smoke
+        run: python -m scripts.rc1_provider_smoke
+      - name: Real service E2E validation
+        run: python -m scripts.rc1_e2e
+      - name: Upload RC1 metrics and trace IDs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rc1-real-qwen-results
+          path: rc1-results.json
+          if-no-files-found: warn
+          retention-days: 14
