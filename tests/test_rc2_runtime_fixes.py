@@ -1,4 +1,8 @@
 import asyncio
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+
+import httpx
 
 from app.agent.context import context_resolver
 from app.agent.models import AgentPrepared, Intent, ToolEvent
@@ -7,6 +11,7 @@ from app.core.config import Settings
 from app.rag.models import Citation, RAGResult
 from app.rag.service import RAGService
 from app.security.prompt_guard import retrieval_query
+from app.tools.base import WeatherInput
 from app.tools.weather import OpenMeteoWeatherProvider
 
 
@@ -106,3 +111,39 @@ def test_longji_uses_verified_canonical_weather_coordinate() -> None:
     assert (lat, lon) == (25.770717, 110.140047)
     assert "龙脊梯田" in resolved
     assert provider.http.settings.tool_timeout_seconds == 5.0
+
+
+def test_weather_forecast_is_reused_for_same_canonical_location() -> None:
+    target = datetime.now(ZoneInfo("Asia/Shanghai")).date() + timedelta(days=1)
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        assert request.url.host == "api.open-meteo.com"
+        return httpx.Response(
+            200,
+            json={
+                "daily": {
+                    "time": [target.isoformat()],
+                    "weather_code": [61],
+                    "temperature_2m_max": [27.2],
+                    "temperature_2m_min": [20.1],
+                    "precipitation_probability_max": [65],
+                }
+            },
+        )
+
+    provider = OpenMeteoWeatherProvider(
+        Settings(tool_mock_mode=False),
+        transport=httpx.MockTransport(handler),
+    )
+    first = asyncio.run(provider.get(WeatherInput(location="桂林", target_date=target)))
+    second = asyncio.run(provider.get(WeatherInput(location="象鼻山", target_date=target)))
+
+    assert calls == 1
+    assert first.metadata["cache_hit"] is False
+    assert first.metadata["provider_attempts"] == 1
+    assert second.metadata["cache_hit"] is True
+    assert second.metadata["provider_attempts"] is None
+    assert second.metadata["provider_latency_ms"] == 0.0
