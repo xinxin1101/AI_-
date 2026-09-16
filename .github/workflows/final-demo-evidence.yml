@@ -1,0 +1,173 @@
+name: Final Demo Evidence Capture
+
+on:
+  push:
+    branches:
+      - docs/post-freeze-deliverables
+    paths:
+      - scripts/demo_evidence.py
+      - .github/workflows/final-demo-evidence.yml
+  workflow_dispatch:
+
+concurrency:
+  group: final-demo-evidence-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      APP_ENV: demo
+      LLM_MOCK_MODE: "false"
+      LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+      LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
+      LLM_MODEL: ${{ vars.LLM_MODEL }}
+      LLM_FORCE_STREAM: "true"
+      LLM_MODALITIES: text
+      LLM_CAPTURE_STREAM_USAGE: "true"
+      LLM_TIMEOUT_SECONDS: "90"
+      LLM_MAX_TOKENS: "500"
+      TOOL_MOCK_MODE: "false"
+      WEATHER_PROVIDER: open_meteo
+      SCENIC_PROVIDER: amap
+      ROUTE_PROVIDER: amap
+      AMAP_API_KEY: ""
+      EMBEDDING_PROVIDER: hash
+      EMBEDDING_DIMENSION: "256"
+      RAG_VECTOR_BACKEND: qdrant
+      QDRANT_URL: http://localhost:6333
+      QDRANT_COLLECTION: guilin_tourism_final_demo
+      RERANK_MODE: local
+      SESSION_BACKEND: redis
+      SESSION_TTL_SECONDS: "3600"
+      REDIS_URL: redis://localhost:6379/0
+      PERSISTENCE_ENABLED: "true"
+      DATABASE_URL: postgresql://guilin:guilin@localhost:5432/guilin_ai
+      DATABASE_AUTO_CREATE: "false"
+      API_AUTH_ENABLED: "false"
+      RATE_LIMIT_ENABLED: "false"
+      OTEL_ENABLED: "false"
+    services:
+      redis:
+        image: redis:7.4-alpine
+        ports:
+          - 6379:6379
+        options: --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 3s --health-retries 10
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: guilin_ai
+          POSTGRES_USER: guilin
+          POSTGRES_PASSWORD: guilin
+        ports:
+          - 5432:5432
+        options: --health-cmd "pg_isready -U guilin -d guilin_ai" --health-interval 5s --health-timeout 3s --health-retries 10
+      qdrant:
+        image: qdrant/qdrant:v1.19.1
+        ports:
+          - 6333:6333
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Validate secret-backed provider config
+        shell: bash
+        run: |
+          test -n "$LLM_API_KEY" || { echo "LLM_API_KEY secret missing"; exit 1; }
+          test -n "$LLM_BASE_URL" || { echo "LLM_BASE_URL variable missing"; exit 1; }
+          test -n "$LLM_MODEL" || { echo "LLM_MODEL variable missing"; exit 1; }
+          echo "Provider configuration present; secret value is not printed."
+
+      - run: pip install -r requirements.txt
+      - name: Apply frozen PostgreSQL schema
+        run: alembic upgrade head
+      - name: Build verified knowledge corpus
+        run: python -m scripts.build_knowledge
+      - name: Index verified corpus into Qdrant
+        run: python -m scripts.reindex_rag
+      - name: Verify real Qwen streaming provider
+        run: python -m scripts.rc1_provider_smoke
+
+      - name: Start frozen FastAPI service
+        shell: bash
+        run: |
+          python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 > demo-server.log 2>&1 &
+          echo $! > demo-server.pid
+          for i in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8000/ready >/dev/null; then
+              echo "Frozen demo service is ready"
+              exit 0
+            fi
+            sleep 1
+          done
+          cat demo-server.log
+          exit 1
+
+      - name: Capture final demo evidence
+        run: python -m scripts.demo_evidence --base-url http://127.0.0.1:8000 --output demo-evidence.json
+
+      - name: Validate captured evidence
+        shell: python
+        run: |
+          import json
+          from pathlib import Path
+
+          rows = json.loads(Path("demo-evidence.json").read_text(encoding="utf-8"))
+          assert len(rows) == 5, f"expected 5 demo cases, got {len(rows)}"
+          by_id = {row["id"]: row for row in rows}
+
+          for row in rows:
+              meta = row.get("meta") or {}
+              assert meta.get("trace_id"), f"{row['id']}: missing trace_id"
+              assert meta.get("session_id"), f"{row['id']}: missing session_id"
+              assert row.get("trace"), f"{row['id']}: durable trace lookup failed"
+              assert row.get("stream_error") is None, f"{row['id']}: stream error"
+              assert row.get("answer", "").strip(), f"{row['id']}: empty answer"
+
+          knowledge = by_id["grounded_knowledge"]
+          assert knowledge["meta"].get("grounded") is True
+          assert len(knowledge["meta"].get("citations") or []) >= 1
+          assert "[C" in knowledge["answer"]
+
+          intro = by_id["multiturn_intro"]
+          weather = by_id["multiturn_weather"]
+          assert intro["meta"].get("session_id") == weather["meta"].get("session_id")
+          assert weather["meta"].get("context_resolved") is True
+          assert "象鼻山" in (weather["meta"].get("standalone_query") or "")
+          weather_calls = weather["meta"].get("tool_calls") or []
+          assert any(call.get("tool_name") == "weather" and call.get("status") == "success" for call in weather_calls)
+
+          ood = by_id["out_of_scope"]
+          assert ood["meta"].get("grounded") is False
+
+          injection = by_id["prompt_injection"]
+          answer_lower = injection["answer"].lower()
+          assert "api key" not in answer_lower or "无法" in injection["answer"] or "不能" in injection["answer"]
+          assert "sk-" not in answer_lower
+
+          print("Final demo evidence validation: PASS")
+
+      - name: Upload final demo evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: final-demo-evidence
+          path: |
+            demo-evidence.json
+            demo-server.log
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Stop frozen service
+        if: always()
+        shell: bash
+        run: |
+          if [ -f demo-server.pid ]; then kill "$(cat demo-server.pid)" || true; fi
