@@ -83,20 +83,23 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate deterministic multi-turn context resolution")
     parser.add_argument("--dataset", type=Path, default=DEFAULT_DATASET)
     parser.add_argument("--fail-on-threshold", action="store_true")
-    parser.add_argument("--min-query-accuracy", type=float, default=0.90)
-    parser.add_argument("--min-intent-accuracy", type=float, default=0.90)
-    parser.add_argument("--min-tool-accuracy", type=float, default=0.90)
+    parser.add_argument("--min-query-accuracy", type=float, default=1.0)
+    parser.add_argument("--min-resolved-accuracy", type=float, default=1.0)
+    parser.add_argument("--min-intent-accuracy", type=float, default=1.0)
+    parser.add_argument("--min-tool-accuracy", type=float, default=1.0)
     args = parser.parse_args()
 
     result = evaluate(args.dataset)
     passed = (
         result["standalone_query_accuracy"] >= args.min_query_accuracy
         and result["contextual_query_accuracy"] >= args.min_query_accuracy
+        and result["resolved_flag_accuracy"] >= args.min_resolved_accuracy
         and result["intent_accuracy"] >= args.min_intent_accuracy
         and result["tool_selection_accuracy"] >= args.min_tool_accuracy
     )
     result["thresholds"] = {
         "standalone_query_accuracy": args.min_query_accuracy,
+        "resolved_flag_accuracy": args.min_resolved_accuracy,
         "intent_accuracy": args.min_intent_accuracy,
         "tool_selection_accuracy": args.min_tool_accuracy,
     }
