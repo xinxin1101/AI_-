@@ -64,12 +64,20 @@ class Settings(BaseSettings):
     rag_eval_grounding_accuracy_min: float = Field(default=0.80, ge=0, le=1)
     rag_eval_citation_hit_rate_min: float = Field(default=0.80, ge=0, le=1)
 
-    # P2 agent/tool configuration. CI keeps TOOL_MOCK_MODE=true so external
-    # provider availability never determines acceptance results.
+    # P2/P2.5 agent and live-provider configuration.
     agent_enabled: bool = True
     tool_mock_mode: bool = True
     tool_timeout_seconds: float = Field(default=15.0, gt=0, le=120)
     tool_max_text_length: int = Field(default=120, ge=20, le=500)
+
+    # Retry semantics: TOOL_RETRY_ATTEMPTS is the number of retries after the
+    # initial attempt. Only transport errors, 408/425/429 and 5xx are retried.
+    tool_retry_attempts: int = Field(default=2, ge=0, le=5)
+    tool_retry_base_delay_seconds: float = Field(default=0.20, ge=0, le=10)
+    tool_retry_max_delay_seconds: float = Field(default=2.0, ge=0, le=30)
+    tool_circuit_failure_threshold: int = Field(default=3, ge=1, le=20)
+    tool_circuit_recovery_seconds: float = Field(default=30.0, ge=1, le=600)
+    tool_http_user_agent: str = "guilin-tourism-ai/0.2.5"
 
     weather_provider: str = "open_meteo"
     open_meteo_geocoding_url: str = "https://geocoding-api.open-meteo.com/v1/search"
@@ -80,6 +88,11 @@ class Settings(BaseSettings):
     amap_api_key: str = ""
     amap_base_url: str = "https://restapi.amap.com"
     amap_region: str = "桂林"
+    amap_citycode_default: str = "0773"
+
+    agent_eval_dataset: str = "eval/intent_router_eval.jsonl"
+    agent_eval_intent_accuracy_min: float = Field(default=0.90, ge=0, le=1)
+    agent_eval_tool_selection_accuracy_min: float = Field(default=0.90, ge=0, le=1)
 
     model_config = SettingsConfigDict(
         env_file=".env",

@@ -1,0 +1,34 @@
+{"case_id": "k01", "query": "象鼻山位于哪里？", "expected_intent": "knowledge", "expected_tool": null}
+{"case_id": "k02", "query": "两江四湖由哪些水系组成？", "expected_intent": "knowledge", "expected_tool": null}
+{"case_id": "k03", "query": "龙脊梯田主要有哪些观景区？", "expected_intent": "knowledge", "expected_tool": null}
+{"case_id": "k04", "query": "独秀峰王城有什么历史文化？", "expected_intent": "knowledge", "expected_tool": null}
+{"case_id": "k05", "query": "漓江三星游船是什么？", "expected_intent": "knowledge", "expected_tool": null}
+{"case_id": "k06", "query": "世外桃源景区主要看什么？", "expected_intent": "knowledge", "expected_tool": null}
+{"case_id": "w01", "query": "明天去漓江会下雨吗？", "expected_intent": "realtime_weather", "expected_tool": "weather"}
+{"case_id": "w02", "query": "后天桂林天气怎么样？", "expected_intent": "realtime_weather", "expected_tool": "weather"}
+{"case_id": "w03", "query": "阳朔今天温度多少？", "expected_intent": "realtime_weather", "expected_tool": "weather"}
+{"case_id": "w04", "query": "龙脊梯田明天气温如何？", "expected_intent": "realtime_weather", "expected_tool": "weather"}
+{"case_id": "w05", "query": "桂林今天晴不晴？", "expected_intent": "realtime_weather", "expected_tool": "weather"}
+{"case_id": "w06", "query": "象鼻山后天天气如何？", "expected_intent": "realtime_weather", "expected_tool": "weather"}
+{"case_id": "s01", "query": "象鼻山今天几点关门？", "expected_intent": "scenic_info", "expected_tool": "scenic_info"}
+{"case_id": "s02", "query": "两江四湖现在开放吗？", "expected_intent": "scenic_info", "expected_tool": "scenic_info"}
+{"case_id": "s03", "query": "龙脊梯田门票多少钱？", "expected_intent": "scenic_info", "expected_tool": "scenic_info"}
+{"case_id": "s04", "query": "独秀峰王城联系电话是多少？", "expected_intent": "scenic_info", "expected_tool": "scenic_info"}
+{"case_id": "s05", "query": "世外桃源几点开门？", "expected_intent": "scenic_info", "expected_tool": "scenic_info"}
+{"case_id": "s06", "query": "漓江游船当前票价是多少？", "expected_intent": "scenic_info", "expected_tool": "scenic_info"}
+{"case_id": "r01", "query": "从桂林北站到阳朔西街怎么走？", "expected_intent": "route", "expected_tool": "route"}
+{"case_id": "r02", "query": "从桂林站去象鼻山坐什么车？", "expected_intent": "route", "expected_tool": "route"}
+{"case_id": "r03", "query": "桂林北站到两江四湖怎么去？", "expected_intent": "route", "expected_tool": "route"}
+{"case_id": "r04", "query": "从阳朔西街到漓江码头打车怎么走？", "expected_intent": "route", "expected_tool": "route"}
+{"case_id": "r05", "query": "从桂林站到龙脊梯田自驾路线", "expected_intent": "route", "expected_tool": "route"}
+{"case_id": "r06", "query": "从象鼻山到独秀峰王城步行怎么走？", "expected_intent": "route", "expected_tool": "route"}
+{"case_id": "i01", "query": "桂林两天怎么玩？", "expected_intent": "itinerary", "expected_tool": "itinerary_planner"}
+{"case_id": "i02", "query": "帮我安排一个三日游", "expected_intent": "itinerary", "expected_tool": "itinerary_planner"}
+{"case_id": "i03", "query": "桂林一日游怎么安排？", "expected_intent": "itinerary", "expected_tool": "itinerary_planner"}
+{"case_id": "i04", "query": "想去漓江和阳朔，行程怎么规划？", "expected_intent": "itinerary", "expected_tool": "itinerary_planner"}
+{"case_id": "i05", "query": "桂林3天路线怎么安排？", "expected_intent": "itinerary", "expected_tool": "itinerary_planner"}
+{"case_id": "i06", "query": "帮我规划两江四湖和象鼻山一天行程", "expected_intent": "itinerary", "expected_tool": "itinerary_planner"}
+{"case_id": "f01", "query": "象鼻山当前信息", "expected_intent": "scenic_info", "expected_tool": "scenic_info", "gate_reason": "fresh_evidence_required"}
+{"case_id": "f02", "query": "漓江实时情况", "expected_intent": "scenic_info", "expected_tool": "scenic_info", "gate_reason": "fresh_evidence_required"}
+{"case_id": "a01", "query": "明天桂林两天怎么玩，顺便看看天气", "expected_intent": "itinerary", "expected_tool": "itinerary_planner"}
+{"case_id": "a02", "query": "从桂林北站到阳朔后两天怎么玩？", "expected_intent": "itinerary", "expected_tool": "itinerary_planner"}

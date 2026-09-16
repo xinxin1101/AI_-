@@ -4,7 +4,9 @@ import httpx
 
 from app.agent.models import ToolEvidence
 from app.core.config import Settings
+from app.tools.amap import ensure_amap_success
 from app.tools.base import RouteInput, ToolExecutionError
+from app.tools.reliability import ProviderHTTPResult, ResilientHTTPClient
 
 
 class MockRouteProvider:
@@ -24,80 +26,133 @@ class MockRouteProvider:
             observed_at=datetime.now(timezone.utc).isoformat(),
             freshness_class="realtime",
             confidence=1.0,
-            metadata={"mock": True, "mode": request.mode},
+            metadata={
+                "mock": True,
+                "mode": request.mode,
+                "provider_attempts": 1,
+                "provider_latency_ms": 0.0,
+                "circuit_state": "closed",
+            },
         )
 
 
 class AMapRouteProvider:
     name = "amap"
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
         self.settings = settings
-
-    async def _geocode(self, client: httpx.AsyncClient, place: str) -> tuple[str, str]:
-        response = await client.get(
-            f"{self.settings.amap_base_url.rstrip('/')}/v3/geocode/geo",
-            params={"key": self.settings.amap_api_key, "address": place, "city": self.settings.amap_region},
+        self.http = ResilientHTTPClient(
+            settings,
+            "amap_route",
+            transport=transport,
         )
-        response.raise_for_status()
-        geocodes = response.json().get("geocodes") or []
+
+    async def _geocode(
+        self,
+        place: str,
+    ) -> tuple[str, str, ProviderHTTPResult]:
+        result = await self.http.get_json(
+            f"{self.settings.amap_base_url.rstrip('/')}/v3/geocode/geo",
+            params={
+                "key": self.settings.amap_api_key,
+                "address": place,
+                "city": self.settings.amap_region,
+            },
+        )
+        payload = result.payload
+        ensure_amap_success(payload, self.http, operation="geocode")
+        geocodes = payload.get("geocodes") or []
         if not geocodes:
+            self.http.record_provider_failure()
             raise ToolExecutionError(f"route place not found: {place}")
         first = geocodes[0]
-        citycode = first.get("citycode") or ""
+        citycode = first.get("citycode") or self.settings.amap_citycode_default
         if isinstance(citycode, list):
-            citycode = citycode[0] if citycode else ""
-        return str(first["location"]), str(citycode)
+            citycode = citycode[0] if citycode else self.settings.amap_citycode_default
+        try:
+            location = str(first["location"])
+        except KeyError as exc:
+            self.http.record_provider_failure()
+            raise ToolExecutionError("amap geocode contract mismatch") from exc
+        return location, str(citycode), result
 
     async def get(self, request: RouteInput) -> ToolEvidence:
         if not self.settings.amap_api_key:
             raise ToolExecutionError("AMAP_API_KEY is required for route provider")
-        try:
-            async with httpx.AsyncClient(timeout=self.settings.tool_timeout_seconds) as client:
-                origin, city1 = await self._geocode(client, request.origin)
-                destination, city2 = await self._geocode(client, request.destination)
-                if request.mode == "transit":
-                    endpoint = "/v5/direction/transit/integrated"
-                    params = {
-                        "key": self.settings.amap_api_key,
-                        "origin": origin,
-                        "destination": destination,
-                        "city1": city1,
-                        "city2": city2 or city1,
-                        "strategy": 0,
-                    }
-                elif request.mode == "walking":
-                    endpoint = "/v5/direction/walking"
-                    params = {"key": self.settings.amap_api_key, "origin": origin, "destination": destination}
-                else:
-                    endpoint = "/v5/direction/driving"
-                    params = {
-                        "key": self.settings.amap_api_key,
-                        "origin": origin,
-                        "destination": destination,
-                        "strategy": 32,
-                    }
-                response = await client.get(f"{self.settings.amap_base_url.rstrip('/')}{endpoint}", params=params)
-                response.raise_for_status()
-                payload = response.json()
-        except ToolExecutionError:
-            raise
-        except (httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
-            raise ToolExecutionError("route provider request failed") from exc
+
+        origin, city1, origin_result = await self._geocode(request.origin)
+        destination, city2, destination_result = await self._geocode(request.destination)
+
+        if request.mode == "transit":
+            endpoint = "/v5/direction/transit/integrated"
+            params = {
+                "key": self.settings.amap_api_key,
+                "origin": origin,
+                "destination": destination,
+                "city1": city1 or self.settings.amap_citycode_default,
+                "city2": city2 or city1 or self.settings.amap_citycode_default,
+                "strategy": 0,
+            }
+        elif request.mode == "walking":
+            endpoint = "/v5/direction/walking"
+            params = {
+                "key": self.settings.amap_api_key,
+                "origin": origin,
+                "destination": destination,
+            }
+        else:
+            endpoint = "/v5/direction/driving"
+            params = {
+                "key": self.settings.amap_api_key,
+                "origin": origin,
+                "destination": destination,
+                "strategy": 32,
+            }
+
+        route_result = await self.http.get_json(
+            f"{self.settings.amap_base_url.rstrip('/')}{endpoint}",
+            params=params,
+        )
+        payload = route_result.payload
+        ensure_amap_success(payload, self.http, operation="route_planning")
 
         route = payload.get("route") or {}
         candidates = route.get("paths") or route.get("transits") or []
         if not candidates:
+            self.http.record_provider_failure()
             raise ToolExecutionError("route provider returned no route")
         first = candidates[0]
         duration = first.get("duration") or route.get("duration")
         distance = first.get("distance") or route.get("distance")
         try:
-            duration_text = f"约 {round(float(duration) / 60)} 分钟" if duration else "未返回耗时"
-            distance_text = f"约 {round(float(distance) / 1000, 1)} 公里" if distance else "未返回距离"
+            duration_text = (
+                f"约 {round(float(duration) / 60)} 分钟"
+                if duration else "未返回耗时"
+            )
+            distance_text = (
+                f"约 {round(float(distance) / 1000, 1)} 公里"
+                if distance else "未返回距离"
+            )
         except (TypeError, ValueError):
             duration_text, distance_text = "未返回耗时", "未返回距离"
+
         mode_cn = {"transit": "公共交通", "walking": "步行", "driving": "驾车"}[request.mode]
+        total_attempts = (
+            origin_result.attempts
+            + destination_result.attempts
+            + route_result.attempts
+        )
+        total_latency = (
+            origin_result.latency_ms
+            + destination_result.latency_ms
+            + route_result.latency_ms
+        )
+
         return ToolEvidence(
             evidence_id="amap_route",
             tool_name="route",
@@ -108,7 +163,14 @@ class AMapRouteProvider:
             observed_at=datetime.now(timezone.utc).isoformat(),
             freshness_class="realtime",
             confidence=0.92,
-            metadata={"origin": origin, "destination": destination, "mode": request.mode},
+            metadata={
+                "origin": origin,
+                "destination": destination,
+                "mode": request.mode,
+                "provider_attempts": total_attempts,
+                "provider_latency_ms": round(total_latency, 2),
+                "circuit_state": self.http.circuit_state,
+            },
         )
 
 

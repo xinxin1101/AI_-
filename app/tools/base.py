@@ -58,8 +58,11 @@ class ToolParameterGuard:
     def weather(self, value: WeatherInput) -> WeatherInput:
         value.location = self.text(value.location, "location")
         today = datetime.now(ZoneInfo("Asia/Shanghai")).date()
-        if value.target_date < today or value.target_date > today + timedelta(days=16):
-            raise ToolExecutionError("weather date must be within the next 16 days")
+        # Open-Meteo forecast_days=16 covers today plus the next 15 days.
+        if value.target_date < today or value.target_date > today + timedelta(days=15):
+            raise ToolExecutionError(
+                "weather date must be within the provider 16-day forecast window"
+            )
         return value
 
     def scenic(self, value: ScenicInfoInput) -> ScenicInfoInput:
@@ -127,5 +130,8 @@ def parse_itinerary_input(query: str) -> ItineraryInput:
         match = re.search(r"([一二两三四五六七])天", query)
         if match:
             days = cn[match.group(1)]
-    interests = [place for place in _KNOWN_PLACES if place in query and place not in {"桂林", "桂林站", "桂林北站"}]
+    interests = [
+        place for place in _KNOWN_PLACES
+        if place in query and place not in {"桂林", "桂林站", "桂林北站"}
+    ]
     return ItineraryInput(days=days, interests=interests[:8])
