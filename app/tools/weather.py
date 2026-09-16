@@ -51,12 +51,14 @@ class OpenMeteoWeatherProvider:
         "两江四湖": "桂林",
         "龙脊梯田": "龙胜",
     }
-    # This project is Guilin-domain specific. Open-Meteo geocoding can fuzzy-match
-    # the Chinese name "桂林" to a different place, so the canonical city location
-    # is pinned instead of trusting the provider's first fuzzy result.
+    # The application is Guilin-domain specific. Open-Meteo fuzzy geocoding has
+    # resolved both 桂林 and 龙胜 to unrelated Chinese places during live RC runs,
+    # so known tourism locations use verified canonical coordinates.
     _KNOWN_COORDINATES = {
         "桂林": (25.2742, 110.2964, "桂林市"),
+        "龙胜": (25.770717, 110.140047, "龙脊梯田风景名胜区"),
     }
+    _MAX_PROVIDER_TIMEOUT_SECONDS = 5.0
 
     def __init__(
         self,
@@ -65,8 +67,19 @@ class OpenMeteoWeatherProvider:
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self.settings = settings
+        # Weather is retried by ResilientHTTPClient. Bounding each attempt prevents
+        # a single public-provider stall from consuming the full generic 15s Tool
+        # timeout before retrying. Other providers retain the configured timeout.
+        weather_settings = settings.model_copy(
+            update={
+                "tool_timeout_seconds": min(
+                    settings.tool_timeout_seconds,
+                    self._MAX_PROVIDER_TIMEOUT_SECONDS,
+                )
+            }
+        )
         self.http = ResilientHTTPClient(
-            settings,
+            weather_settings,
             self.name,
             transport=transport,
         )
