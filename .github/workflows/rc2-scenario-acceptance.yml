@@ -6,6 +6,10 @@ on:
       - rc/rc2-scenario-acceptance
   workflow_dispatch:
 
+concurrency:
+  group: rc2-scenario-acceptance-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
