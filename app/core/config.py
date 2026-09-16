@@ -20,8 +20,24 @@ class Settings(BaseSettings):
     llm_force_stream: bool = False
     llm_modalities: str = "text"
     llm_extra_body_json: str = "{}"
+    llm_capture_stream_usage: bool = False
 
+    # P3 short-term conversation state.
     session_max_messages: int = Field(default=20, ge=2, le=200)
+    session_backend: str = "memory"
+    session_ttl_seconds: int = Field(default=86400, ge=60, le=2592000)
+    redis_url: str = "redis://localhost:6379/0"
+    redis_prefix: str = "guilin-ai"
+    redis_socket_timeout_seconds: float = Field(default=3.0, gt=0, le=30)
+
+    # P3 durable persistence.
+    persistence_enabled: bool = False
+    database_url: str = "postgresql://guilin:guilin@localhost:5432/guilin_ai"
+    database_min_pool_size: int = Field(default=1, ge=1, le=20)
+    database_max_pool_size: int = Field(default=10, ge=1, le=50)
+    database_command_timeout_seconds: float = Field(default=10.0, gt=0, le=120)
+    database_auto_create: bool = True
+    metrics_window_size: int = Field(default=1000, ge=50, le=100000)
 
     rag_enabled: bool = True
     rag_knowledge_path: str = "data/knowledge/verified"
@@ -69,15 +85,12 @@ class Settings(BaseSettings):
     tool_mock_mode: bool = True
     tool_timeout_seconds: float = Field(default=15.0, gt=0, le=120)
     tool_max_text_length: int = Field(default=120, ge=20, le=500)
-
-    # Retry semantics: TOOL_RETRY_ATTEMPTS is the number of retries after the
-    # initial attempt. Only transport errors, 408/425/429 and 5xx are retried.
     tool_retry_attempts: int = Field(default=2, ge=0, le=5)
     tool_retry_base_delay_seconds: float = Field(default=0.20, ge=0, le=10)
     tool_retry_max_delay_seconds: float = Field(default=2.0, ge=0, le=30)
     tool_circuit_failure_threshold: int = Field(default=3, ge=1, le=20)
     tool_circuit_recovery_seconds: float = Field(default=30.0, ge=1, le=600)
-    tool_http_user_agent: str = "guilin-tourism-ai/0.2.5"
+    tool_http_user_agent: str = "guilin-tourism-ai/0.3.0"
 
     weather_provider: str = "open_meteo"
     open_meteo_geocoding_url: str = "https://geocoding-api.open-meteo.com/v1/search"
