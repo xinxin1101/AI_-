@@ -8,6 +8,7 @@ from app.agent.router import classify_intent
 from app.core.config import Settings, get_settings
 from app.rag.models import Citation, RAGResult
 from app.rag.service import LOW_CONFIDENCE_ANSWER, rag_service
+from app.security.prompt_guard import retrieval_query
 from app.services.llm import LLMClient, llm_client
 from app.tools.base import (
     ToolExecutionError,
@@ -24,6 +25,11 @@ TOOL_UNAVAILABLE_ANSWER = (
     "当前实时服务暂时无法提供可靠结果，我不会用静态资料猜测实时信息。"
     "你可以稍后重试，或以景区、天气和地图官方渠道的最新信息为准。"
 )
+_REALTIME_TOOL_INTENTS = {
+    Intent.WEATHER.value,
+    Intent.SCENIC_INFO.value,
+    Intent.ROUTE.value,
+}
 
 
 class AgentService:
@@ -53,7 +59,8 @@ class AgentService:
         }
 
     async def _rag_probe(self, state: AgentState) -> dict:
-        return {"rag_result": await rag_service.retrieve(self._active_query(state))}
+        query = retrieval_query(self._active_query(state))
+        return {"rag_result": await rag_service.retrieve(query)}
 
     async def _route_intent(self, state: AgentState) -> dict:
         rag_result = state.get("rag_result")
@@ -214,9 +221,29 @@ class AgentService:
             else:
                 context_blocks.append(f"[规划约束]\n{item.content}\n")
 
-        grounded = rag_result.grounded or citable_tool_evidence
         tool_calls = state.get("tool_calls", [])
         has_tool_error = any(item.status == "error" for item in tool_calls)
+        realtime_tool_failed = (
+            state.get("intent") in _REALTIME_TOOL_INTENTS
+            and has_tool_error
+            and not citable_tool_evidence
+        )
+
+        # A failed live tool must override static RAG evidence for realtime intents.
+        # Otherwise a route/opening-time failure can accidentally authorize the LLM
+        # to invent current transport, price or opening details from unrelated static
+        # attraction documents.
+        if realtime_tool_failed:
+            return {
+                "context": "",
+                "citations": [],
+                "grounded": False,
+                "confidence": 0.0,
+                "gate_reason": "tool_unavailable",
+                "fallback_answer": TOOL_UNAVAILABLE_ANSWER,
+            }
+
+        grounded = rag_result.grounded or citable_tool_evidence
         if citable_tool_evidence:
             gate_reason = "tool_evidence"
         elif rag_result.grounded:
@@ -301,6 +328,12 @@ class AgentService:
             context_resolution_reason=state.get("context_resolution_reason"),
         )
 
+    @staticmethod
+    def _ensure_single_citation(answer: str, prepared: AgentPrepared) -> str:
+        if len(prepared.citations) != 1 or "[C" in answer:
+            return answer
+        return f"{answer.rstrip()} [{prepared.citations[0].citation_id}]"
+
     async def complete(
         self,
         history: list[dict[str, str]],
@@ -310,7 +343,7 @@ class AgentService:
         if not prepared.can_generate:
             return prepared, prepared.fallback_answer or LOW_CONFIDENCE_ANSWER
         answer = await self.llm.complete(history, query, context=prepared.context)
-        return prepared, answer
+        return prepared, self._ensure_single_citation(answer, prepared)
 
     async def stream(
         self,
@@ -323,8 +356,13 @@ class AgentService:
             for index in range(0, len(text), 12):
                 yield text[index : index + 12]
             return
+        saw_citation = False
         async for chunk in self.llm.stream(history, query, context=prepared.context):
+            if "[C" in chunk:
+                saw_citation = True
             yield chunk
+        if len(prepared.citations) == 1 and not saw_citation:
+            yield f" [{prepared.citations[0].citation_id}]"
 
 
 agent_service = AgentService()
