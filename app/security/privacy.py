@@ -6,7 +6,11 @@ from typing import Any
 from app.core.config import Settings, get_settings
 
 
-_EMAIL = re.compile(r"\b([A-Za-z0-9._%+-])([A-Za-z0-9._%+-]*)(@[A-Za-z0-9.-]+\.[A-Za-z]{2,})\b")
+# ASCII-aware boundaries are intentional: Python's Unicode `\b` treats adjacent
+# Chinese characters as word characters, so "邮箱alice@example.com" would not match.
+_EMAIL = re.compile(
+    r"(?<![A-Za-z0-9._%+-])([A-Za-z0-9._%+-])([A-Za-z0-9._%+-]*)(@[A-Za-z0-9.-]+\.[A-Za-z]{2,})(?![A-Za-z0-9._%+-])"
+)
 _PHONE = re.compile(r"(?<!\d)(1[3-9]\d)(\d{4})(\d{4})(?!\d)")
 _CN_ID = re.compile(r"(?<!\d)(\d{6})(\d{8})(\d{3}[0-9Xx])(?!\d)")
 _BEARER = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{8,}")
