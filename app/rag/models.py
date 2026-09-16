@@ -55,6 +55,9 @@ class Citation(BaseModel):
     source_url: str | None = None
     updated_at: str | None = None
     snippet: str
+    source_type: str = "knowledge"
+    tool_name: str | None = None
+    observed_at: str | None = None
 
 
 class RAGResult(BaseModel):

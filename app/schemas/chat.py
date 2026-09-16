@@ -3,6 +3,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from app.agent.models import ToolEvent
 from app.rag.models import Citation
 
 
@@ -23,6 +24,9 @@ class ChatResponse(BaseModel):
     grounded: bool = False
     confidence: float = 0.0
     citations: list[Citation] = Field(default_factory=list)
+    intent: str = "knowledge"
+    gate_reason: str | None = None
+    tool_calls: list[ToolEvent] = Field(default_factory=list)
 
 
 class FeedbackRequest(BaseModel):

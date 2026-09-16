@@ -6,41 +6,31 @@
 
 - **P0 ✅** FastAPI + LLM + Session + `/chat` + `/chat/stream` + Feedback + Docker/CI
 - **P1 ✅** Dense + BM25 + RRF + Reranker + Citation + Confidence Gate + Qdrant
-- **P1.5 🚧** 官方来源 Registry + Knowledge Pipeline + Freshness Gate + RAG Eval
-- **P2** LangGraph + Intent Router + Tool Calling + 实时天气/路线/行程规划
+- **P1.5 ✅** 一手来源 Registry + Knowledge Pipeline + Freshness Gate + RAG Eval
+- **P2 🚧** LangGraph + Intent Router + Tool Calling + 实时天气/景点/路线 + 行程规划
 - **P3** Redis/PostgreSQL + Trace/Eval 平台化 + Guardrail + 生产部署
 
-P1.5 详细设计见 [`docs/p1_5_knowledge_eval.md`](docs/p1_5_knowledge_eval.md)。
+P1.5 设计见 `docs/p1_5_knowledge_eval.md`，P2 设计见 `docs/p2_agent_tools.md`。
 
-## P1.5 数据链路
+## P2 请求链路
 
 ```text
-Official/Government Source Registry
-              |
-              v
-       Fetch + HTML Extract
-              |
-              v
-       Provenance Snapshot
-              |
-              v
-  Normalized KnowledgeDocument
-              |
-       Expiry/Freshness Filter
-              |
-              v
- Dense + BM25 -> RRF -> Rerank
-              |
-       Confidence/Freshness Gate
-              |
-              v
-        Context + Citation
-              |
-              v
-             LLM
+微信小程序
+   -> FastAPI
+   -> LangGraph rag_probe
+   -> Intent Router
+        | knowledge        -> P1.5 RAG
+        | realtime_weather -> Weather Tool
+        | scenic_info      -> Scenic POI Tool
+        | route            -> Route Tool
+        | itinerary        -> Itinerary Planner
+   -> Tool Parameter Guard
+   -> Evidence Merge (RAG + Tool -> [C#])
+   -> configurable Qwen/OpenAI-compatible LLM
+   -> answer + citations + intent + tool_calls
 ```
 
-`data/knowledge/verified/official_guilin_seed.jsonl` 是按公开一手来源重新整理的 **验证种子语料**，保留来源 URL、发布方、来源级别和核验时间；它不是原项目生产知识库。开放时间、票价、天气、班次等高时效信息不会因为曾经出现在静态网页中就永久进入回答，过期记录会在索引前被剔除，实时类问题还需要新的动态证据。
+P1.5 的 `fresh_evidence_required` 现在会继续进入实时 Tool 路径。例如“明天去漓江会下雨吗？”不会使用静态网页猜天气，而会进入 Weather Tool。
 
 ## 快速启动
 
@@ -55,36 +45,32 @@ python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 Swagger：`http://localhost:8000/docs`
 
-默认使用 Mock LLM、Hash Embedding 和内存向量库，因此不需要密钥即可跑 API、RAG 和 Eval。真实部署时可切 OpenAI-compatible Embedding + Qdrant。
+默认 `LLM_MOCK_MODE=true`、`TOOL_MOCK_MODE=true`、Hash Embedding + 内存向量库，不需要 Key 即可跑完整 Agent acceptance。Mock Tool 返回内容明确标记为开发模拟数据，不应作为真实旅游信息使用。
 
-## Knowledge Pipeline
+## 真实 Tool Provider
 
-只验证 Registry 和当前 verified corpus：
+天气使用 Open-Meteo：
 
-```bash
-python -m scripts.build_knowledge
+```env
+TOOL_MOCK_MODE=false
+WEATHER_PROVIDER=open_meteo
 ```
 
-主动抓取 Registry 中启用的一手来源并生成 snapshot/refreshed JSONL：
+景点营业信息和路线使用高德 Web服务，需要 Key：
 
-```bash
-python -m scripts.build_knowledge --live
+```env
+TOOL_MOCK_MODE=false
+SCENIC_PROVIDER=amap
+ROUTE_PROVIDER=amap
+AMAP_API_KEY=your-web-service-key
+AMAP_REGION=桂林
 ```
 
-外部站点抓取不放进 CI，避免网络波动影响工程验收。
-
-## RAG Eval
-
-```bash
-python -m scripts.eval_rag
-python -m scripts.eval_rag --fail-on-threshold
-```
-
-当前评测覆盖 Recall@5、MRR、Grounding/Fallback Accuracy、Citation Hit Rate、Evidence Coverage，以及 OOD/过期资料/实时问题的拒答行为。
+Tool 结果先转换为可追溯 `ToolEvidence`，再与 RAG Citation 合并。LLM 不直接拥有任意网络访问或任意 Tool 参数权限。
 
 ## 后续千问模型接入
 
-LLM 仍采用 OpenAI-compatible `/chat/completions`，模型名完全由环境变量控制。示例：
+LLM 仍采用 OpenAI-compatible `/chat/completions`，模型名完全由环境变量控制：
 
 ```env
 LLM_MOCK_MODE=false
@@ -96,7 +82,14 @@ LLM_MODALITIES=text
 LLM_EXTRA_BODY_JSON={"enable_thinking":false}
 ```
 
-以后更换模型时只修改 `LLM_MODEL` 等配置，不修改 `/chat` Controller。对于要求 provider streaming 的模型，普通 `/chat` 会在服务端聚合流式结果；`/chat/stream` 仍直接输出 SSE。
+以后更换型号只改 `LLM_MODEL` 等配置，不修改 Agent Graph 或 `/chat` Controller。
+
+## Knowledge / Eval
+
+```bash
+python -m scripts.build_knowledge
+python -m scripts.eval_rag --fail-on-threshold
+```
 
 ## 测试
 
@@ -104,4 +97,4 @@ LLM_EXTRA_BODY_JSON={"enable_thinking":false}
 python -m pytest -q
 ```
 
-P1.5 CI 会同时验证：P0/P1 回归、知识来源与过期过滤、RAG Eval 指标下限；P1 的 Qdrant 集成测试仍保留在前一阶段 CI 中。
+P2 CI 会验证 P0-P1.5 回归、Intent Router、Tool 参数 Guard、Weather/Scenic/Route/Itinerary 四条 Graph 分支、Evidence Merge、SSE 元数据、RAG Eval 阈值和真实 Qdrant round-trip。

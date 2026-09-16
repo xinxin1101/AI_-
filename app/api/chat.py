@@ -5,9 +5,9 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException, status
 from fastapi.responses import StreamingResponse
 
-from app.rag.service import LOW_CONFIDENCE_ANSWER, rag_service
+from app.agent.service import agent_service
 from app.schemas.chat import ChatRequest, ChatResponse
-from app.services.llm import LLMProviderError, llm_client
+from app.services.llm import LLMProviderError
 from app.services.session_store import session_store
 
 
@@ -23,32 +23,18 @@ def _sse(event: str, payload: dict) -> str:
     return f"event: {event}\ndata: {data}\n\n"
 
 
-async def _text_chunks(text: str, size: int = 12) -> AsyncIterator[str]:
-    for index in range(0, len(text), size):
-        yield text[index : index + size]
-
-
 @router.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest) -> ChatResponse:
     session = await session_store.get_or_create(request.session_id)
     history = await session_store.history(session.session_id)
     trace_id = _trace_id()
-    rag_result = await rag_service.retrieve(request.message)
-
-    if rag_service.settings.rag_enabled and not rag_result.grounded:
-        answer = LOW_CONFIDENCE_ANSWER
-    else:
-        try:
-            answer = await llm_client.complete(
-                history,
-                request.message,
-                context=rag_result.context or None,
-            )
-        except LLMProviderError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail="AI provider is temporarily unavailable",
-            ) from exc
+    try:
+        prepared, answer = await agent_service.complete(history, request.message)
+    except LLMProviderError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="AI provider is temporarily unavailable",
+        ) from exc
 
     await session_store.append_message(session.session_id, "user", request.message)
     await session_store.append_message(session.session_id, "assistant", answer)
@@ -57,9 +43,12 @@ async def chat(request: ChatRequest) -> ChatResponse:
         trace_id=trace_id,
         session_id=session.session_id,
         answer=answer,
-        grounded=rag_result.grounded,
-        confidence=round(rag_result.confidence, 4),
-        citations=rag_result.citations,
+        grounded=prepared.grounded,
+        confidence=round(prepared.confidence, 4),
+        citations=prepared.citations,
+        intent=prepared.intent.value,
+        gate_reason=prepared.gate_reason,
+        tool_calls=prepared.tool_calls,
     )
 
 
@@ -68,7 +57,7 @@ async def chat_stream(request: ChatRequest) -> StreamingResponse:
     session = await session_store.get_or_create(request.session_id)
     history = await session_store.history(session.session_id)
     trace_id = _trace_id()
-    rag_result = await rag_service.retrieve(request.message)
+    prepared = await agent_service.prepare(history, request.message)
 
     async def event_generator() -> AsyncIterator[str]:
         chunks: list[str] = []
@@ -77,22 +66,17 @@ async def chat_stream(request: ChatRequest) -> StreamingResponse:
             {
                 "trace_id": trace_id,
                 "session_id": session.session_id,
-                "grounded": rag_result.grounded,
-                "confidence": round(rag_result.confidence, 4),
-                "citations": [item.model_dump() for item in rag_result.citations],
+                "grounded": prepared.grounded,
+                "confidence": round(prepared.confidence, 4),
+                "citations": [item.model_dump() for item in prepared.citations],
+                "intent": prepared.intent.value,
+                "gate_reason": prepared.gate_reason,
+                "tool_calls": [item.model_dump() for item in prepared.tool_calls],
             },
         )
 
         try:
-            if rag_service.settings.rag_enabled and not rag_result.grounded:
-                stream = _text_chunks(LOW_CONFIDENCE_ANSWER)
-            else:
-                stream = llm_client.stream(
-                    history,
-                    request.message,
-                    context=rag_result.context or None,
-                )
-            async for chunk in stream:
+            async for chunk in agent_service.stream(prepared, history, request.message):
                 chunks.append(chunk)
                 yield _sse("token", {"delta": chunk})
         except LLMProviderError:
@@ -114,7 +98,8 @@ async def chat_stream(request: ChatRequest) -> StreamingResponse:
             {
                 "trace_id": trace_id,
                 "session_id": session.session_id,
-                "grounded": rag_result.grounded,
+                "grounded": prepared.grounded,
+                "intent": prepared.intent.value,
             },
         )
 
