@@ -10,6 +10,16 @@ from app.rag.text import normalize_text, tokenize
 from app.rag.vector_store import VectorStore
 
 
+def searchable_text(chunk: KnowledgeChunk) -> str:
+    """Return the text representation used by lexical, dense and rerank stages.
+
+    Title and tags carry important aliases (for example 象山/象鼻山) and must be
+    indexed together with the body rather than being metadata-only.
+    """
+    tag_text = " ".join(chunk.tags)
+    return "\n".join(part for part in (chunk.title, tag_text, chunk.text) if part)
+
+
 class BM25Index:
     def __init__(self) -> None:
         self._tokens: dict[str, list[str]] = {}
@@ -17,7 +27,9 @@ class BM25Index:
         self._avgdl = 0.0
 
     def build(self, chunks: list[KnowledgeChunk]) -> None:
-        self._tokens = {chunk.chunk_id: tokenize(chunk.text) for chunk in chunks}
+        self._tokens = {
+            chunk.chunk_id: tokenize(searchable_text(chunk)) for chunk in chunks
+        }
         document_count = len(self._tokens)
         self._avgdl = (
             sum(len(tokens) for tokens in self._tokens.values()) / document_count
@@ -32,7 +44,14 @@ class BM25Index:
             for token, frequency in document_frequency.items()
         }
 
-    def search(self, query: str, top_k: int, *, k1: float = 1.5, b: float = 0.75) -> list[tuple[str, float]]:
+    def search(
+        self,
+        query: str,
+        top_k: int,
+        *,
+        k1: float = 1.5,
+        b: float = 0.75,
+    ) -> list[tuple[str, float]]:
         query_tokens = tokenize(query)
         scored: list[tuple[str, float]] = []
         for chunk_id, tokens in self._tokens.items():
@@ -65,15 +84,23 @@ def reciprocal_rank_fusion(
 
 
 class LocalReranker:
-    def rerank(self, query: str, hits: list[RetrievalHit], top_k: int) -> list[RetrievalHit]:
+    def rerank(
+        self, query: str, hits: list[RetrievalHit], top_k: int
+    ) -> list[RetrievalHit]:
         query_tokens = set(tokenize(query))
         max_rrf = max((hit.rrf_score for hit in hits), default=1.0) or 1.0
         normalized_query = normalize_text(query)
 
         for hit in hits:
-            chunk_tokens = set(tokenize(hit.chunk.text))
+            evidence_text = searchable_text(hit.chunk)
+            chunk_tokens = set(tokenize(evidence_text))
             overlap = len(query_tokens & chunk_tokens) / max(len(query_tokens), 1)
-            phrase_bonus = 0.15 if len(normalized_query) >= 3 and normalized_query in normalize_text(hit.chunk.text) else 0.0
+            phrase_bonus = (
+                0.15
+                if len(normalized_query) >= 3
+                and normalized_query in normalize_text(evidence_text)
+                else 0.0
+            )
             evidence = min(1.0, overlap * 1.4 + phrase_bonus)
             dense_strength = max(0.0, min(1.0, (hit.dense_score - 0.15) / 0.85))
             rrf_strength = hit.rrf_score / max_rrf
@@ -90,7 +117,9 @@ class HTTPReranker:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
 
-    async def rerank(self, query: str, hits: list[RetrievalHit], top_k: int) -> list[RetrievalHit]:
+    async def rerank(
+        self, query: str, hits: list[RetrievalHit], top_k: int
+    ) -> list[RetrievalHit]:
         if not self.settings.rerank_api_key:
             raise RuntimeError("RERANK_API_KEY is required when RERANK_MODE=http")
         headers = {
@@ -104,7 +133,7 @@ class HTTPReranker:
                 json={
                     "model": self.settings.rerank_model,
                     "query": query,
-                    "documents": [hit.chunk.text for hit in hits],
+                    "documents": [searchable_text(hit.chunk) for hit in hits],
                     "top_n": min(top_k, len(hits)),
                 },
             )
@@ -114,7 +143,11 @@ class HTTPReranker:
         for item in payload.get("results", []):
             index = item.get("index")
             score = item.get("relevance_score", item.get("score"))
-            if isinstance(index, int) and 0 <= index < len(hits) and isinstance(score, (int, float)):
+            if (
+                isinstance(index, int)
+                and 0 <= index < len(hits)
+                and isinstance(score, (int, float))
+            ):
                 hit = hits[index]
                 hit.rerank_score = max(0.0, min(1.0, float(score)))
                 reranked.append(hit)
@@ -139,7 +172,9 @@ class HybridRetriever:
     async def index(self, chunks: list[KnowledgeChunk]) -> None:
         self.chunks = {chunk.chunk_id: chunk for chunk in chunks}
         self.bm25.build(chunks)
-        vectors = await self.embedding_provider.embed_documents([chunk.text for chunk in chunks])
+        vectors = await self.embedding_provider.embed_documents(
+            [searchable_text(chunk) for chunk in chunks]
+        )
         await self.vector_store.replace(chunks, vectors)
 
     async def retrieve(self, query: str) -> list[RetrievalHit]:
@@ -164,5 +199,9 @@ class HybridRetriever:
         ]
 
         if self.settings.rerank_mode == "http":
-            return await self.http_reranker.rerank(query, hits, self.settings.rag_rerank_top_k)
-        return self.local_reranker.rerank(query, hits, self.settings.rag_rerank_top_k)
+            return await self.http_reranker.rerank(
+                query, hits, self.settings.rag_rerank_top_k
+            )
+        return self.local_reranker.rerank(
+            query, hits, self.settings.rag_rerank_top_k
+        )
